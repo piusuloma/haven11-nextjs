@@ -1,14 +1,5 @@
 {
   "/page": "app/page.js",
-  "/events/page": "app/events/page.js",
-  "/alerts/page": "app/alerts/page.js",
-  "/customers/page": "app/customers/page.js",
-  "/expenses/page": "app/expenses/page.js",
-  "/purchase-orders/page": "app/purchase-orders/page.js",
-  "/store-home/page": "app/store-home/page.js",
-  "/inventory/page": "app/inventory/page.js",
-  "/cashier/page": "app/cashier/page.js",
-  "/cashier-home/page": "app/cashier-home/page.js",
-  "/payroll/page": "app/payroll/page.js",
-  "/dispatch/page": "app/dispatch/page.js"
+  "/login/page": "app/login/page.js",
+  "/_not-found/page": "app/_not-found/page.js"
 }
