@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { toast } from "sonner";
 import {
   Plus, Minus, Trash2, CreditCard, Banknote, Smartphone,
   CheckCircle2, ChevronLeft, Users, ShoppingBag, Bike, SlidersHorizontal, Tag, X,
@@ -10,7 +11,7 @@ import { Modal, ModalButton } from "@/components/Modal";
 import { managerByPin } from "@/components/ManagerApprovalModal";
 import { useAuth } from "@/lib/auth";
 import {
-  useStore, type MenuItem, type Order, type OrderChannel, type OrderCustomer,
+  useStore, type MenuItem, type Order, type OrderLine, type OrderChannel, type OrderCustomer,
   type TableRec, type TableStatus, type Modifier, type PaymentEntry,
 } from "@/lib/store";
 
@@ -24,6 +25,7 @@ interface CartItem {
   qty: number;
   modifiers: Modifier[];
   note: string;
+  sent?: boolean; // already fired to the kitchen on an open tab
 }
 
 interface ServiceOrder {
@@ -72,6 +74,14 @@ const cartId = () => `c${cartSeq++}`;
 
 const lineUnit = (c: CartItem) => c.basePrice + c.modifiers.reduce((s, m) => s + m.price, 0);
 
+const toLine = (c: CartItem): OrderLine => ({
+  name: c.name,
+  qty: c.qty,
+  price: lineUnit(c),
+  modifiers: c.modifiers.length ? c.modifiers : undefined,
+  note: c.note || undefined,
+});
+
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export default function POS() {
@@ -90,6 +100,10 @@ export default function POS() {
   const [discountOpen, setDiscountOpen] = useState(false);
   const [screen, setScreen] = useState<"tables" | "menu" | "pay" | "done">("tables");
   const [lastOrder, setLastOrder] = useState<Order | null>(null);
+  // When set, the screen is working an existing open tab rather than a fresh order.
+  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+
+  const staff = { id: user?.id ?? "0", name: user?.name ?? "Unknown" };
 
   const menuItems = store.menu.filter((m) => m.status === "Available");
   const categories = ["All", ...Array.from(new Set(menuItems.map((i) => i.category)))];
@@ -99,12 +113,17 @@ export default function POS() {
   const cappedDiscount = Math.min(discount, subtotal);
   const vat = Math.round((subtotal - cappedDiscount) * 0.075);
   const total = subtotal - cappedDiscount + vat;
+  const newItems = cart.filter((c) => !c.sent);
+  const newItemCount = newItems.reduce((s, c) => s + c.qty, 0);
+  const sentCount = cart.filter((c) => c.sent).reduce((s, c) => s + c.qty, 0);
 
-  const orderLabel = selectedTable
-    ? selectedTable.label
-    : service
-      ? `${service.channel} · ${service.name}`
-      : "New order";
+  const orderLabel = editingOrder
+    ? `${editingOrder.table} · #${editingOrder.id}`
+    : selectedTable
+      ? selectedTable.label
+      : service
+        ? `${service.channel} · ${service.name}`
+        : "New order";
 
   function seatGuests(table: TableRec, count: number) {
     store.seatTable(table.id, count);
@@ -123,9 +142,36 @@ export default function POS() {
     setScreen("menu");
   }
 
+  // Resume an open tab to add more items.
+  function openTab(order: Order) {
+    setEditingOrder(order);
+    setSelectedTable(null);
+    setService(null);
+    setGuests(order.guests ?? 0);
+    setDiscount(order.discount ?? 0);
+    setDiscountNote(order.discountNote ?? "");
+    setCart(order.lines.map((l) => {
+      const modifiers = l.modifiers ?? [];
+      const modSum = modifiers.reduce((s, m) => s + m.price, 0);
+      return {
+        id: cartId(),
+        name: l.name,
+        basePrice: l.price - modSum,
+        emoji: store.menu.find((m) => m.name === l.name)?.emoji ?? "🍽️",
+        qty: l.qty,
+        modifiers,
+        note: l.note ?? "",
+        sent: true,
+      };
+    }));
+    setCat("All");
+    setScreen("menu");
+  }
+
   function addItem(item: MenuItem) {
     setCart((prev) => {
-      const plain = prev.find((c) => c.name === item.name && c.modifiers.length === 0 && !c.note);
+      // Merge into an existing plain line, but never into one already sent to the kitchen.
+      const plain = prev.find((c) => c.name === item.name && c.modifiers.length === 0 && !c.note && !c.sent);
       if (plain) return prev.map((c) => (c.id === plain.id ? { ...c, qty: c.qty + 1 } : c));
       return [...prev, { id: cartId(), name: item.name, basePrice: item.price, emoji: item.emoji, qty: 1, modifiers: [], note: "" }];
     });
@@ -146,34 +192,84 @@ export default function POS() {
     setCustomizing(null);
   }
 
+  // Pay for a fresh order in one go.
   function confirmPayment(payments: PaymentEntry[], splitWays: number, methodSummary: string) {
     const channel: OrderChannel = service ? service.channel : "Dine-in";
     const customer: OrderCustomer | undefined = service
       ? { name: service.name, phone: service.phone, address: service.address, pickup: service.pickup }
       : undefined;
-
     const order = store.recordSale({
       table: selectedTable?.label ?? service?.channel ?? "Walk-in",
       channel,
       customer,
       guests: selectedTable ? guests : undefined,
-      lines: cart.map((c) => ({
-        name: c.name,
-        qty: c.qty,
-        price: lineUnit(c),
-        modifiers: c.modifiers.length ? c.modifiers : undefined,
-        note: c.note || undefined,
-      })),
+      lines: cart.map(toLine),
       discount: cappedDiscount || undefined,
       discountNote: cappedDiscount ? discountNote : undefined,
       payments,
       splitWays,
       method: methodSummary,
       deliveryFee: service?.channel === "Delivery" ? service.fee : undefined,
-      staff: { id: user?.id ?? "0", name: user?.name ?? "Unknown" },
+      staff,
     });
     setLastOrder(order);
     if (selectedTable) store.freeTable(selectedTable.id);
+    setScreen("done");
+  }
+
+  // Open a tab — items fire to the kitchen now, the tab stays open until paid.
+  function holdOrder() {
+    if (cart.length === 0) return;
+    const channel: OrderChannel = service ? service.channel : "Dine-in";
+    const customer: OrderCustomer | undefined = service
+      ? { name: service.name, phone: service.phone, address: service.address, pickup: service.pickup }
+      : undefined;
+    const order = store.recordSale({
+      table: selectedTable?.label ?? service?.channel ?? "Walk-in",
+      channel,
+      customer,
+      guests: selectedTable ? guests : undefined,
+      lines: cart.map(toLine),
+      discount: cappedDiscount || undefined,
+      discountNote: cappedDiscount ? discountNote : undefined,
+      payments: [],
+      splitWays: 1,
+      method: "On hold",
+      deliveryFee: service?.channel === "Delivery" ? service.fee : undefined,
+      staff,
+      hold: true,
+    });
+    toast.success(`Tab ${order.id} opened — ${orderLabel} · sent to the kitchen`);
+    reset();
+  }
+
+  // Send newly-added items on an open tab to the kitchen, keep the tab open.
+  function updateTab() {
+    if (!editingOrder || newItems.length === 0) return;
+    store.appendToOrder(editingOrder.id, newItems.map(toLine), staff);
+    toast.success(`Tab ${editingOrder.id} updated — ${newItemCount} item${newItemCount !== 1 ? "s" : ""} sent to the kitchen`);
+    reset();
+  }
+
+  // Close an open tab: fire any new items, then take payment.
+  function payTab(payments: PaymentEntry[], splitWays: number, methodSummary: string) {
+    if (!editingOrder) return;
+    if (newItems.length > 0) store.appendToOrder(editingOrder.id, newItems.map(toLine), staff);
+    store.closeOrder(editingOrder.id, { payments, splitWays, method: methodSummary, staff });
+    const tbl = store.tables.find((t) => t.label === editingOrder.table);
+    if (editingOrder.channel === "Dine-in" && tbl) store.freeTable(tbl.id);
+    setLastOrder({
+      ...editingOrder,
+      status: "Closed" as const,
+      lines: cart.map(toLine),
+      subtotal,
+      discount: cappedDiscount || undefined,
+      vat,
+      total,
+      payments,
+      splitWays: splitWays > 1 ? splitWays : undefined,
+      method: methodSummary,
+    });
     setScreen("done");
   }
 
@@ -190,6 +286,7 @@ export default function POS() {
     setGuests(0);
     setService(null);
     setLastOrder(null);
+    setEditingOrder(null);
     setScreen("tables");
   }
 
@@ -199,9 +296,10 @@ export default function POS() {
     const availCount    = store.tables.filter((t) => t.status === "available").length;
     const occupiedCount = store.tables.filter((t) => t.status === "occupied").length;
     const reservedCount = store.tables.filter((t) => t.status === "reserved").length;
+    const heldOrders = store.orders.filter((o) => o.status === "On hold" && o.branch === store.currentBranch && !o.voided);
 
     return (
-      <AppShell title="Start an order" subtitle="Pick a table, or start a takeout / delivery order">
+      <AppShell title="Start an order" subtitle="Pick a table, open a tab, or start a takeout / delivery order">
         <div className="space-y-6 max-w-3xl">
           <section>
             <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 px-0.5">Takeout &amp; Delivery</h2>
@@ -216,6 +314,37 @@ export default function POS() {
               </button>
             </div>
           </section>
+
+          {heldOrders.length > 0 && (
+            <section>
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 px-0.5">
+                Open tabs · tap to add items or close &amp; pay
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {heldOrders.map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => openTab(o)}
+                    className="flex items-center justify-between gap-3 rounded-2xl border-2 border-amber-200 bg-amber-50/60 p-4 text-left transition-all hover:border-amber-300 active:scale-[0.97]"
+                  >
+                    <span className="min-w-0">
+                      <span className="block text-sm font-bold truncate">
+                        {o.table} <span className="font-mono text-xs font-normal text-muted-foreground">#{o.id}</span>
+                      </span>
+                      <span className="block text-xs text-muted-foreground">
+                        {o.channel} · {o.lines.reduce((s, l) => s + l.qty, 0)} items · {o.staffName}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-right">
+                      <span className="block text-sm font-bold tabular-nums">₦{o.total.toLocaleString()}</span>
+                      <span className="block text-[11px] font-semibold text-amber-700">Open tab →</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
 
           <div className="grid grid-cols-3 gap-3">
             {[
@@ -286,11 +415,11 @@ export default function POS() {
           <div>
             <p className="text-2xl font-bold">Payment received</p>
             <p className="mt-1 text-muted-foreground">
-              Order #{lastOrder?.id} · {orderLabel}
+              Order #{lastOrder?.id} · {lastOrder?.table ?? orderLabel}
               {lastOrder?.guests ? ` · ${lastOrder.guests} guests` : ""} · ₦{lastOrder?.total.toLocaleString()}
             </p>
             <p className="mt-2 text-xs font-medium text-emerald-600">
-              Sent to the line · inventory deducted · logged to your shift
+              Tab closed · inventory deducted · logged to your shift
             </p>
           </div>
 
@@ -338,9 +467,9 @@ export default function POS() {
         orderLabel={orderLabel}
         cartCount={cartCount}
         discount={cappedDiscount}
-        deliveryFee={service?.channel === "Delivery" ? service.fee ?? 0 : undefined}
+        deliveryFee={!editingOrder && service?.channel === "Delivery" ? service.fee ?? 0 : undefined}
         onBack={() => setScreen("menu")}
-        onComplete={confirmPayment}
+        onComplete={editingOrder ? payTab : confirmPayment}
       />
     );
   }
@@ -348,9 +477,13 @@ export default function POS() {
   // ── Menu + cart screen ──────────────────────────────────────────────────────
 
   return (
-    <AppShell title={orderLabel} subtitle="Tap items to add · customise · then charge">
+    <AppShell
+      title={orderLabel}
+      subtitle={editingOrder ? "Add items to the open tab, then update or close it" : "Tap items to add · customise · then charge"}
+    >
       <button type="button" onClick={cancelOrder} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground -mt-1">
-        <ChevronLeft className="h-4 w-4" /> Cancel order{selectedTable ? " · release table" : ""}
+        <ChevronLeft className="h-4 w-4" />
+        {editingOrder ? "Back — tab stays open" : `Cancel order${selectedTable ? " · release table" : ""}`}
       </button>
 
       <div className="flex gap-5 items-start">
@@ -390,6 +523,7 @@ export default function POS() {
             </div>
             {selectedTable && <p className="mt-1 text-xs text-muted-foreground">{guests} guest{guests !== 1 ? "s" : ""} seated</p>}
             {service && <p className="mt-1 text-xs text-muted-foreground truncate">{service.phone}{service.address ? ` · ${service.address}` : service.pickup ? ` · ${service.pickup}` : ""}</p>}
+            {editingOrder && <p className="mt-1 text-xs text-muted-foreground">Open tab · {sentCount} item{sentCount !== 1 ? "s" : ""} already in the kitchen</p>}
           </div>
 
           {cart.length === 0 ? (
@@ -406,23 +540,38 @@ export default function POS() {
                       <p className="text-sm font-medium truncate">{item.name}</p>
                       <p className="text-xs text-muted-foreground tabular-nums">₦{lineUnit(item).toLocaleString()}</p>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <button type="button" aria-label="Remove one" onClick={() => changeQty(item.id, -1)} className="grid h-7 w-7 place-items-center rounded-lg border border-border hover:bg-surface transition-colors"><Minus className="h-3 w-3" /></button>
-                      <span className="w-5 text-center text-sm font-semibold tabular-nums">{item.qty}</span>
-                      <button type="button" aria-label="Add one" onClick={() => changeQty(item.id, 1)} className="grid h-7 w-7 place-items-center rounded-lg border border-border hover:bg-surface transition-colors"><Plus className="h-3 w-3" /></button>
-                      <button type="button" aria-label="Remove item" onClick={() => removeLine(item.id)} className="ml-1 grid h-7 w-7 place-items-center rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"><Trash2 className="h-3.5 w-3.5" /></button>
-                    </div>
+                    {item.sent ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold tabular-nums">×{item.qty}</span>
+                        <span className="rounded-full bg-surface px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">Sent</span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <button type="button" aria-label="Remove one" onClick={() => changeQty(item.id, -1)} className="grid h-7 w-7 place-items-center rounded-lg border border-border hover:bg-surface transition-colors"><Minus className="h-3 w-3" /></button>
+                        <span className="w-5 text-center text-sm font-semibold tabular-nums">{item.qty}</span>
+                        <button type="button" aria-label="Add one" onClick={() => changeQty(item.id, 1)} className="grid h-7 w-7 place-items-center rounded-lg border border-border hover:bg-surface transition-colors"><Plus className="h-3 w-3" /></button>
+                        <button type="button" aria-label="Remove item" onClick={() => removeLine(item.id)} className="ml-1 grid h-7 w-7 place-items-center rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"><Trash2 className="h-3.5 w-3.5" /></button>
+                      </div>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setCustomizing(item)}
-                    className="flex w-full items-center gap-1.5 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground transition-colors"
-                  >
-                    <SlidersHorizontal className="h-3 w-3 shrink-0" />
-                    {item.modifiers.length === 0 && !item.note
-                      ? "Customise / special instructions"
-                      : [...item.modifiers.map((m) => m.label), item.note].filter(Boolean).join(" · ")}
-                  </button>
+                  {item.sent ? (
+                    (item.modifiers.length > 0 || item.note) && (
+                      <p className="pl-9 text-[11px] text-muted-foreground">
+                        {[...item.modifiers.map((m) => m.label), item.note].filter(Boolean).join(" · ")}
+                      </p>
+                    )
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setCustomizing(item)}
+                      className="flex w-full items-center gap-1.5 rounded-lg border border-dashed border-border px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:border-primary/50 hover:text-foreground transition-colors"
+                    >
+                      <SlidersHorizontal className="h-3 w-3 shrink-0" />
+                      {item.modifiers.length === 0 && !item.note
+                        ? "Customise / special instructions"
+                        : [...item.modifiers.map((m) => m.label), item.note].filter(Boolean).join(" · ")}
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -437,7 +586,9 @@ export default function POS() {
                 <div className="flex justify-between text-primary">
                   <span className="flex items-center gap-1">
                     Discount
-                    <button type="button" aria-label="Remove discount" onClick={() => { setDiscount(0); setDiscountNote(""); }} className="text-muted-foreground hover:text-destructive"><X className="h-3 w-3" /></button>
+                    {!editingOrder && (
+                      <button type="button" aria-label="Remove discount" onClick={() => { setDiscount(0); setDiscountNote(""); }} className="text-muted-foreground hover:text-destructive"><X className="h-3 w-3" /></button>
+                    )}
                   </span>
                   <span className="tabular-nums">−₦{cappedDiscount.toLocaleString()}</span>
                 </div>
@@ -449,13 +600,22 @@ export default function POS() {
                 <span>Total</span><span className="tabular-nums">₦{total.toLocaleString()}</span>
               </div>
             </div>
-            {cappedDiscount === 0 && (
+            {!editingOrder && cappedDiscount === 0 && (
               <button type="button" disabled={cart.length === 0} onClick={() => setDiscountOpen(true)} className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-border py-2 text-xs font-semibold hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed">
                 <Tag className="h-3.5 w-3.5" />Add discount
               </button>
             )}
+            {editingOrder ? (
+              <button type="button" disabled={newItemCount === 0} onClick={updateTab} className="w-full rounded-xl border border-border py-2.5 text-xs font-semibold hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed">
+                {newItemCount === 0 ? "No new items to send" : `Send ${newItemCount} new item${newItemCount !== 1 ? "s" : ""} to kitchen`}
+              </button>
+            ) : (
+              <button type="button" disabled={cart.length === 0} onClick={holdOrder} className="w-full rounded-xl border border-border py-2.5 text-xs font-semibold hover:bg-surface disabled:opacity-40 disabled:cursor-not-allowed">
+                Open tab — send to kitchen, pay later
+              </button>
+            )}
             <button type="button" disabled={cart.length === 0} onClick={() => setScreen("pay")} className="w-full rounded-2xl bg-primary py-4 text-base font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-              Charge ₦{total.toLocaleString()}
+              {editingOrder ? "Close tab & pay" : "Charge"} ₦{total.toLocaleString()}
             </button>
           </div>
         </aside>

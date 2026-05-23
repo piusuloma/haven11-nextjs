@@ -4,7 +4,6 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Modal, ModalButton } from "@/components/Modal";
-import { ManagerApprovalModal } from "@/components/ManagerApprovalModal";
 import { useAuth } from "@/lib/auth";
 import { useStore, type ExpenseRequest, type ExpenseStatus } from "@/lib/store";
 import { Plus, Wallet as WalletIcon, Receipt, AlertTriangle, CheckCircle2 } from "lucide-react";
@@ -19,13 +18,6 @@ const BUDGETS: Record<string, number> = {
   "Diesel / Fuel": 600000, "Utilities": 300000, "Repairs & Maintenance": 200000,
   "Cleaning": 100000, "Staff Welfare": 150000, "Transport": 120000, "Supplies": 250000, "Other": 100000,
 };
-
-/** Approval tier by amount — per Module 5 of the 702 spec. */
-function approvalTier(amount: number): { label: string; ownerOnly: boolean } {
-  if (amount <= 10000) return { label: "Branch Manager", ownerOnly: false };
-  if (amount <= 100000) return { label: "Operations Head", ownerOnly: false };
-  return { label: "MD / Owner", ownerOnly: true };
-}
 
 const statusClass: Record<ExpenseStatus, string> = {
   Pending:    "bg-warning/15 text-foreground",
@@ -54,9 +46,10 @@ export default function Expenses() {
   const store = useStore();
   const { user } = useAuth();
   const me = user?.name ?? "You";
+  // Petty cash is approved by the Accountant (the Owner may also approve).
+  const canApprove = user?.role === "accountant" || user?.role === "owner";
 
   const [creating, setCreating] = useState(false);
-  const [approving, setApproving] = useState<ExpenseRequest | null>(null);
   const [reconciling, setReconciling] = useState<ExpenseRequest | null>(null);
   const [toppingUp, setToppingUp] = useState(false);
 
@@ -158,7 +151,6 @@ export default function Expenses() {
           </div>
         ) : (
           branchExpenses.map((e) => {
-            const tier = approvalTier(e.amount);
             return (
               <article key={e.id} className="rounded-xl border border-border bg-card p-5">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -171,7 +163,7 @@ export default function Expenses() {
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">{e.description}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  {e.requestedBy} · {timeAgo(e.requestedAt)} · approval tier: {tier.label}
+                  {e.requestedBy} · {timeAgo(e.requestedAt)} · approval: Accountant
                   {e.approvedBy && ` · approved by ${e.approvedBy}`}
                 </p>
 
@@ -182,12 +174,14 @@ export default function Expenses() {
                 )}
 
                 <div className="mt-3 flex justify-end gap-1.5">
-                  {e.status === "Pending" && (
+                  {e.status === "Pending" && (canApprove ? (
                     <>
                       <button onClick={() => { store.rejectExpense(e.id, me); toast.error(`${e.id} rejected`); }} className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">Reject</button>
-                      <button onClick={() => setApproving(e)} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">Approve</button>
+                      <button onClick={() => { store.approveExpense(e.id, me); toast.success(`${e.id} approved by ${me}`); }} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">Approve</button>
                     </>
-                  )}
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Awaiting Accountant approval</span>
+                  ))}
                   {e.status === "Approved" && (
                     <button onClick={() => disburse(e)} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">Disburse cash</button>
                   )}
@@ -204,7 +198,7 @@ export default function Expenses() {
       </section>
 
       {/* Leakage report — spend vs budget by category (owner/manager analytics) */}
-      {(user?.role === "owner" || user?.role === "manager") && (
+      {(user?.role === "owner" || user?.role === "manager" || user?.role === "accountant") && (
         <div className="rounded-xl border border-border bg-card p-5">
           <h2 className="text-sm font-semibold">Expense leakage — spend vs budget</h2>
           <div className="mt-4 space-y-3">
@@ -236,20 +230,6 @@ export default function Expenses() {
       )}
 
       {creating && <NewExpenseModal me={me} onClose={() => setCreating(false)} />}
-      {approving && (
-        <ManagerApprovalModal
-          title={`Approve ${approving.id}`}
-          description={`₦${approving.amount.toLocaleString()} · ${approving.category} · tier: ${approvalTier(approving.amount).label}`}
-          ownerOnly={approvalTier(approving.amount).ownerOnly}
-          confirmLabel="Approve expense"
-          onClose={() => setApproving(null)}
-          onApprove={(mgr) => {
-            store.approveExpense(approving.id, mgr);
-            toast.success(`${approving.id} approved by ${mgr}`);
-            setApproving(null);
-          }}
-        />
-      )}
       {reconciling && <ReconcileModal expense={reconciling} me={me} onClose={() => setReconciling(null)} />}
       {toppingUp && wallet && <TopUpModal branch={branch} me={me} balance={wallet.balance} float={wallet.float} onClose={() => setToppingUp(false)} />}
     </AppShell>
@@ -269,13 +249,12 @@ function NewExpenseModal({ me, onClose }: { me: string; onClose: () => void }) {
   const budget = BUDGETS[category];
   const remaining = budget - spent;
   const overBudget = amt > remaining;
-  const tier = approvalTier(amt);
 
   function submit() {
     if (amt <= 0) { toast.error("Enter an amount"); return; }
     if (!description.trim()) { toast.error("Add a description"); return; }
     const created = store.requestExpense({ category, amount: amt, description: description.trim(), by: me });
-    toast.success(`${created.id} submitted — routed to ${tier.label}`);
+    toast.success(`${created.id} submitted — routed to the Accountant`);
     onClose();
   }
 
@@ -284,7 +263,7 @@ function NewExpenseModal({ me, onClose }: { me: string; onClose: () => void }) {
       open
       onClose={onClose}
       title="New petty-cash request"
-      description="Routed for approval by amount"
+      description="Routed to the Accountant for approval"
       footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={submit}>Submit request</ModalButton></>}
     >
       <div className="space-y-4">
@@ -309,8 +288,8 @@ function NewExpenseModal({ me, onClose }: { me: string; onClose: () => void }) {
             <span className={`tabular-nums font-medium ${overBudget ? "text-destructive" : ""}`}>₦{remaining.toLocaleString()}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-muted-foreground">Approval tier</span>
-            <span className="font-medium">{tier.label}</span>
+            <span className="text-muted-foreground">Approver</span>
+            <span className="font-medium">Accountant</span>
           </div>
         </div>
         {overBudget && amt > 0 && (

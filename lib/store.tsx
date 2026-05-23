@@ -15,7 +15,53 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type Line = "Bar" | "Kitchen" | "Lounge";
+export type Line = "Bar" | "Kitchen" | "Lounge" | "Juice Bar";
+
+/** Where stock physically sits within a branch. The Strong Room uses only "store". */
+export type StockLocation = "store" | "kitchen" | "bar" | "juice-bar";
+
+export const LOCATION_NAME: Record<StockLocation, string> = {
+  store: "Main Store", kitchen: "Kitchen", bar: "Bar", "juice-bar": "Juice Bar",
+};
+
+/** The sub-store a product's line naturally belongs to. */
+export function locationForLine(line: Line): StockLocation {
+  return line === "Bar" ? "bar" : line === "Juice Bar" ? "juice-bar" : line === "Kitchen" ? "kitchen" : "store";
+}
+
+/**
+ * Default category vocabulary for the product catalogue, used as the seed for
+ * `state.inventoryCategories`. Owners / managers curate the live list at
+ * runtime through the **Manage categories** modal (reached from the inventory
+ * filter popover and the New product dialog), so categories are stored as a
+ * plain `string` — not a literal union — at the type level.
+ *
+ * One product → one category — the operator picks from this list when defining
+ * a new SKU so the inventory list and the request picker group / filter
+ * consistently.
+ */
+export const DEFAULT_INVENTORY_CATEGORIES = [
+  "Protein",
+  "Produce",
+  "Grains",
+  "Spices",
+  "Oils & Fats",
+  "Dairy",
+  "Beer",
+  "Spirits",
+  "Wine",
+  "Mixers",
+  "Hot Drinks",
+  "Soft Drinks",
+  "Cleaning",
+  "Other",
+] as const;
+export type InventoryCategory = string;
+
+/** Coerce a raw CSV value to a known category, falling back to "Other". */
+export function asCategory(raw: string | undefined, valid: readonly string[]): InventoryCategory {
+  return raw && valid.includes(raw) ? raw : "Other";
+}
 
 export interface Branch {
   id: string;
@@ -26,12 +72,19 @@ export interface Branch {
 export interface InventoryItem {
   sku: string;
   branch: string; // branch id this stock row belongs to
+  location: StockLocation; // Main Store / Kitchen / Bar / Juice Bar
   name: string;
+  /** Coarse-grained group used by search and the request picker (e.g. "Protein"). */
+  category: InventoryCategory;
   line: Line;
   onHand: number;
   reorder: number; // par / reorder level
   unit: string;
   cost: number; // ₦ per unit
+  /** Optional alternative unit captured at receiving (e.g. "kg" beside "pcs" for yam). */
+  altUnit?: string;
+  /** Running count in the alternative unit — manually adjusted on receive and stock-count. */
+  altOnHand?: number;
 }
 
 export interface RecipeLine {
@@ -64,6 +117,7 @@ export interface Shift {
   openingFloat: number;
   countedCash?: number;
   status: "open" | "closed";
+  period?: string; // "Full day" / "1st shift" / "2nd shift" / "3rd shift"
   seedSales?: number;
 }
 
@@ -78,6 +132,9 @@ export interface OrderLine {
 }
 
 export type OrderChannel = "Dine-in" | "Takeout" | "Delivery";
+
+/** An order is "On hold" once placed (sent to the kitchen) and "Closed" once paid. */
+export type OrderStatus = "On hold" | "Closed";
 
 export interface OrderCustomer {
   name: string;
@@ -107,6 +164,7 @@ export interface Order {
   staffName: string;
   shiftId?: string;
   at: number;
+  status: OrderStatus;
   voided?: boolean;
   voidReason?: string;
   voidedBy?: string;
@@ -115,6 +173,7 @@ export interface Order {
 export interface WasteEntry {
   id: string;
   branch: string;
+  location: StockLocation;
   sku: string;
   name: string;
   qty: number;
@@ -124,11 +183,15 @@ export interface WasteEntry {
   staffName: string;
   shiftId?: string;
   at: number;
+  /** Optional photo captured on the prep floor (data URL for small files). */
+  photoName?: string;
+  photoDataUrl?: string;
 }
 
 export interface StockCount {
   id: string;
   branch: string;
+  location: StockLocation;
   sku: string;
   name: string;
   line: Line;
@@ -214,7 +277,7 @@ export interface Vendor {
   category: string;
 }
 
-export type POStatus = "Ordered" | "Partially Received" | "Received";
+export type POStatus = "Pending Approval" | "Ordered" | "Partially Received" | "Received" | "Rejected";
 
 export interface POLine {
   sku: string;
@@ -261,6 +324,24 @@ export interface Batch {
   poId?: string;
 }
 
+// ── Internal stock requests (branch Main Store → Kitchen / Bar / Juice Bar) ──
+
+export type StockReqStatus = "Requested" | "Issued";
+
+export interface StockReqLine { sku: string; name: string; unit: string; qty: number }
+
+export interface StockRequest {
+  id: string;
+  branch: string;
+  toLocation: StockLocation; // kitchen / bar / juice-bar
+  lines: StockReqLine[];
+  status: StockReqStatus;
+  requestedBy: string;
+  requestedAt: number;
+  issuedBy?: string;
+  issuedAt?: number;
+}
+
 // ── Expenses & petty cash ────────────────────────────────────────────────────
 
 export type ExpenseStatus = "Pending" | "Approved" | "Rejected" | "Disbursed" | "Reconciled";
@@ -291,6 +372,16 @@ export interface Wallet {
 
 // ── HR & payroll ─────────────────────────────────────────────────────────────
 
+/** A compliance document uploaded against an employee record. */
+export interface ComplianceDoc {
+  uploaded: boolean;
+  fileName?: string;
+  size?: number;          // bytes
+  uploadedAt?: number;
+  /** Data URL — kept for small files so the prototype can offer Download. */
+  dataUrl?: string;
+}
+
 export interface Employee {
   id: string;
   name: string;
@@ -303,10 +394,14 @@ export interface Employee {
   baseSalary: number;
   transport: number;
   housing: number;
-  compliance: { guarantor: boolean; contract: boolean; idCard: boolean };
+  compliance: { guarantor: ComplianceDoc; contract: ComplianceDoc; idCard: ComplianceDoc };
   certName: string;
   certExpiry: string; // ISO date
-  status: "Active" | "Suspended";
+  status: "Active" | "Suspended" | "Offboarded";
+  /** Mon..Sun shift assignment — "Off" / "Full day" / "1st shift" / "2nd shift" / "3rd shift". */
+  weeklySchedule?: string[];
+  offboardedAt?: number;
+  offboardReason?: string;
 }
 
 export interface Attendance {
@@ -407,6 +502,82 @@ export interface Customer {
   seedSpend?: number;
   seedFavorite?: string;
   seedLastDays?: number; // days since last visit (seed baseline)
+  // ── Customer accounts (wallet + house tab) ─────────────────────────────────
+  /** Prepaid balance the customer keeps with us. Always ≥ 0. */
+  wallet: number;
+  /** Outstanding amount owed to us on house account. Always ≥ 0. */
+  credit: number;
+  /** Maximum allowed `credit` balance. `0` means house charges are disabled. */
+  creditLimit: number;
+}
+
+/** A line in the customer ledger — top-ups, wallet spends, on-account charges, payments. */
+export type LedgerKind =
+  | "wallet-topup"      // customer adds money to wallet
+  | "wallet-spend"      // wallet drawn down to pay an order
+  | "wallet-refund"     // money taken out of wallet back to customer
+  | "credit-charge"     // order put on house account (increases credit owed)
+  | "credit-payment"    // customer pays down their house account
+  | "credit-writeoff";  // bad-debt written off (decreases credit owed)
+
+export interface CustomerLedgerEntry {
+  id: string;
+  customerId: string;
+  branch: string;
+  at: number;
+  kind: LedgerKind;
+  /** Always positive — the `kind` determines whether it's a debit or credit. */
+  amount: number;
+  /** Free-text note: payment method, "order #1234", "Cleared June statement", etc. */
+  note?: string;
+  /** Linked order, if this entry came from a POS sale. */
+  orderId?: string;
+  /** Linked invoice, if this entry is a payment against a statement. */
+  invoiceId?: string;
+  /** Staff member who processed the entry. */
+  staffName: string;
+}
+
+export type InvoiceStatus = "Draft" | "Sent" | "Partially Paid" | "Paid" | "Overdue" | "Void";
+export type ReminderKind =
+  | "pre-due"   // 3 days before due
+  | "on-due"    // on due date
+  | "overdue-7"
+  | "overdue-14"
+  | "overdue-30"; // final notice
+
+export interface InvoiceReminder {
+  at: number;
+  kind: ReminderKind;
+  channel: "Email" | "SMS";
+  sentBy: string;
+}
+
+export interface CustomerInvoice {
+  id: string;            // INV-YYYY-MM-NNNN
+  customerId: string;
+  customerName: string;
+  branch: string;
+  /** Period the statement covers (e.g. month of May). */
+  periodStart: string;   // ISO date
+  periodEnd: string;     // ISO date
+  issueDate: string;     // ISO date
+  dueDate: string;       // ISO date
+  status: InvoiceStatus;
+  lines: {
+    /** Source ledger entry — every line is one unbilled house charge. */
+    ledgerId: string;
+    orderId?: string;
+    date: string;        // ISO date
+    description: string;
+    amount: number;
+  }[];
+  subtotal: number;
+  paid: number;          // running total of payments applied to this invoice
+  reminders: InvoiceReminder[];
+  /** Staff who generated this statement. */
+  createdBy: string;
+  createdAt: number;
 }
 
 export type Sentiment = "Positive" | "Neutral" | "Negative";
@@ -486,6 +657,8 @@ interface StoreState {
   branches: Branch[];
   currentBranch: string;
   inventory: InventoryItem[];
+  /** Live category vocabulary, curated by owner/manager. Seeded from `DEFAULT_INVENTORY_CATEGORIES`. */
+  inventoryCategories: string[];
   menu: MenuItem[];
   shifts: Shift[];
   orders: Order[];
@@ -498,6 +671,7 @@ interface StoreState {
   purchaseOrders: PurchaseOrder[];
   priceChanges: PriceChange[];
   batches: Batch[];
+  stockRequests: StockRequest[];
   expenses: ExpenseRequest[];
   wallets: Wallet[];
   employees: Employee[];
@@ -507,6 +681,10 @@ interface StoreState {
   riders: Rider[];
   deliveries: DeliveryJob[];
   customers: Customer[];
+  /** Append-only ledger of customer wallet + credit movements. */
+  customerLedger: CustomerLedgerEntry[];
+  /** Statements / invoices issued against house accounts. */
+  customerInvoices: CustomerInvoice[];
   feedback: Feedback[];
   complaints: ComplaintTicket[];
   events: RestaurantEvent[];
@@ -525,30 +703,51 @@ const SEED_BRANCHES: Branch[] = [
 ];
 
 /** Master product catalogue — stock rows are generated per branch from this. */
-const PRODUCTS = [
-  { sku: "BAR-RUM",     name: "White Rum",       line: "Bar" as Line,     unit: "L",     cost: 8200,  reorder: 6,  hub: 60,  branch: 5  },
-  { sku: "BAR-HEIN",    name: "Heineken 330ml",  line: "Bar" as Line,     unit: "btl",   cost: 1100,  reorder: 48, hub: 600, branch: 96 },
-  { sku: "BAR-LIME",    name: "Lime",            line: "Bar" as Line,     unit: "pcs",   cost: 120,   reorder: 24, hub: 300, branch: 60 },
-  { sku: "BAR-MINT",    name: "Mint",            line: "Bar" as Line,     unit: "bunch", cost: 200,   reorder: 6,  hub: 40,  branch: 14 },
-  { sku: "BAR-SODA",    name: "Soda Water",      line: "Bar" as Line,     unit: "L",     cost: 600,   reorder: 4,  hub: 40,  branch: 9  },
-  { sku: "BAR-SYRUP",   name: "Simple Syrup",    line: "Bar" as Line,     unit: "L",     cost: 4000,  reorder: 2,  hub: 18,  branch: 4  },
-  { sku: "BAR-COFFEE",  name: "Coffee Beans",    line: "Bar" as Line,     unit: "kg",    cost: 12000, reorder: 2,  hub: 20,  branch: 5  },
-  { sku: "KIT-RICE",    name: "Basmati Rice",    line: "Kitchen" as Line, unit: "kg",    cost: 2400,  reorder: 20, hub: 400, branch: 48 },
-  { sku: "KIT-OIL",     name: "Vegetable Oil",   line: "Kitchen" as Line, unit: "L",     cost: 2900,  reorder: 10, hub: 200, branch: 26 },
-  { sku: "KIT-GOAT",    name: "Goat Meat",       line: "Kitchen" as Line, unit: "kg",    cost: 5600,  reorder: 10, hub: 120, branch: 8  },
-  { sku: "KIT-TILAPIA", name: "Tilapia (whole)", line: "Kitchen" as Line, unit: "pcs",   cost: 3200,  reorder: 8,  hub: 80,  branch: 6  },
-  { sku: "KIT-BEEF",    name: "Beef Sirloin",    line: "Kitchen" as Line, unit: "kg",    cost: 6000,  reorder: 5,  hub: 90,  branch: 11 },
-  { sku: "KIT-SUYA",    name: "Suya Spice",      line: "Kitchen" as Line, unit: "kg",    cost: 8750,  reorder: 2,  hub: 24,  branch: 5  },
-  { sku: "KIT-YAM",     name: "Yam",             line: "Kitchen" as Line, unit: "kg",    cost: 1750,  reorder: 8,  hub: 160, branch: 22 },
-  { sku: "KIT-PLANTAIN",name: "Plantain",        line: "Kitchen" as Line, unit: "pcs",   cost: 250,   reorder: 30, hub: 500, branch: 80 },
+type ProductSeed = {
+  sku: string; name: string; line: Line; unit: string; cost: number;
+  category: InventoryCategory;
+  reorder: number; hub: number; branch: number;
+  /** Optional alt unit — captured beside the primary when receiving. */
+  altUnit?: string; altHub?: number; altBranch?: number;
+};
+
+const PRODUCTS: ProductSeed[] = [
+  { sku: "BAR-RUM",     name: "White Rum",       line: "Bar",     category: "Spirits",     unit: "L",     cost: 8200,  reorder: 6,  hub: 60,  branch: 5  },
+  { sku: "BAR-HEIN",    name: "Heineken 330ml",  line: "Bar",     category: "Beer",        unit: "btl",   cost: 1100,  reorder: 48, hub: 600, branch: 96 },
+  { sku: "BAR-LIME",    name: "Lime",            line: "Bar",     category: "Produce",     unit: "pcs",   cost: 120,   reorder: 24, hub: 300, branch: 60 },
+  { sku: "BAR-MINT",    name: "Mint",            line: "Bar",     category: "Produce",     unit: "bunch", cost: 200,   reorder: 6,  hub: 40,  branch: 14 },
+  { sku: "BAR-SODA",    name: "Soda Water",      line: "Bar",     category: "Mixers",      unit: "L",     cost: 600,   reorder: 4,  hub: 40,  branch: 9  },
+  { sku: "BAR-SYRUP",   name: "Simple Syrup",    line: "Bar",     category: "Mixers",      unit: "L",     cost: 4000,  reorder: 2,  hub: 18,  branch: 4  },
+  { sku: "BAR-COFFEE",  name: "Coffee Beans",    line: "Bar",     category: "Hot Drinks",  unit: "kg",    cost: 12000, reorder: 2,  hub: 20,  branch: 5  },
+  { sku: "KIT-RICE",    name: "Basmati Rice",    line: "Kitchen", category: "Grains",      unit: "kg",    cost: 2400,  reorder: 20, hub: 400, branch: 48 },
+  { sku: "KIT-OIL",     name: "Vegetable Oil",   line: "Kitchen", category: "Oils & Fats", unit: "L",     cost: 2900,  reorder: 10, hub: 200, branch: 26 },
+  { sku: "KIT-GOAT",    name: "Goat Meat",       line: "Kitchen", category: "Protein",     unit: "kg",    cost: 5600,  reorder: 10, hub: 120, branch: 8  },
+  { sku: "KIT-TILAPIA", name: "Tilapia (whole)", line: "Kitchen", category: "Protein",     unit: "pcs",   cost: 3200,  reorder: 8,  hub: 80,  branch: 6,  altUnit: "kg",  altHub: 32,  altBranch: 3 },
+  { sku: "KIT-BEEF",    name: "Beef Sirloin",    line: "Kitchen", category: "Protein",     unit: "kg",    cost: 6000,  reorder: 5,  hub: 90,  branch: 11 },
+  { sku: "KIT-SUYA",    name: "Suya Spice",      line: "Kitchen", category: "Spices",      unit: "kg",    cost: 8750,  reorder: 2,  hub: 24,  branch: 5  },
+  { sku: "KIT-YAM",     name: "Yam",             line: "Kitchen", category: "Produce",     unit: "kg",    cost: 1750,  reorder: 8,  hub: 160, branch: 22, altUnit: "pcs", altHub: 54,  altBranch: 8 },
+  { sku: "KIT-PLANTAIN",name: "Plantain",        line: "Kitchen", category: "Produce",     unit: "pcs",   cost: 250,   reorder: 30, hub: 500, branch: 80, altUnit: "kg",  altHub: 100, altBranch: 16 },
 ];
 
 const SPOKE_IDS = ["lekki", "ikoyi", "agungi"];
 
-const SEED_INVENTORY: InventoryItem[] = PRODUCTS.flatMap((p) => [
-  { sku: p.sku, branch: HUB_ID, name: p.name, line: p.line, onHand: p.hub, reorder: Math.round(p.reorder * 4), unit: p.unit, cost: p.cost },
-  ...SPOKE_IDS.map((b) => ({ sku: p.sku, branch: b, name: p.name, line: p.line, onHand: p.branch, reorder: p.reorder, unit: p.unit, cost: p.cost })),
-]);
+// Each branch holds stock in a Main Store; the Kitchen and Bar keep their own
+// working sub-stores, fed from the Main Store on internal request.
+const SEED_INVENTORY: InventoryItem[] = PRODUCTS.flatMap((p) => {
+  const subLoc: StockLocation | null =
+    p.line === "Kitchen" ? "kitchen" : p.line === "Bar" ? "bar" : null;
+  const altSub = p.altBranch != null ? Math.round(p.altBranch / 2) : undefined;
+  const rows: InventoryItem[] = [
+    { sku: p.sku, branch: HUB_ID, location: "store", name: p.name, line: p.line, category: p.category, onHand: p.hub, reorder: Math.round(p.reorder * 4), unit: p.unit, cost: p.cost, altUnit: p.altUnit, altOnHand: p.altHub },
+  ];
+  for (const b of SPOKE_IDS) {
+    rows.push({ sku: p.sku, branch: b, location: "store", name: p.name, line: p.line, category: p.category, onHand: p.branch, reorder: p.reorder, unit: p.unit, cost: p.cost, altUnit: p.altUnit, altOnHand: p.altBranch });
+    if (subLoc) {
+      rows.push({ sku: p.sku, branch: b, location: subLoc, name: p.name, line: p.line, category: p.category, onHand: Math.round(p.branch / 2), reorder: Math.max(2, Math.round(p.reorder / 2)), unit: p.unit, cost: p.cost, altUnit: p.altUnit, altOnHand: altSub });
+    }
+  }
+  return rows;
+});
 
 const SEED_MENU: MenuItem[] = [
   { id: "m1",  name: "Jollof Rice",     category: "Mains",     price: 4500, emoji: "🍚", status: "Available", recipe: [{ sku: "KIT-RICE", qty: 0.25 }, { sku: "KIT-OIL", qty: 0.04 }] },
@@ -588,7 +787,7 @@ function mkOrder(
   return {
     id: `A-${2360 + seedOrderNo}`, branch: "lekki", table, channel, customer,
     lines, subtotal, vat, total: subtotal + vat, method, staffName,
-    at: Date.now() - minsAgo * 60000,
+    at: Date.now() - minsAgo * 60000, status: "Closed",
   };
 }
 
@@ -609,8 +808,8 @@ const SEED_ORDERS: Order[] = [
 ];
 
 const SEED_SHIFTS: Shift[] = [
-  { id: "S-201", staffId: "3", staffName: "Bayo K.", role: "cashier", branch: "lekki", openedAt: Date.now() - DAY, closedAt: Date.now() - DAY + 8 * 3600_000, openingFloat: 50000, countedCash: 537400, status: "closed", seedSales: 488200 },
-  { id: "S-202", staffId: "3", staffName: "Ada O.",  role: "cashier", branch: "lekki", openedAt: Date.now() - DAY, closedAt: Date.now() - DAY + 8 * 3600_000, openingFloat: 50000, countedCash: 662400, status: "closed", seedSales: 612400 },
+  { id: "S-201", staffId: "3", staffName: "Bayo K.", role: "cashier", branch: "lekki", openedAt: Date.now() - DAY, closedAt: Date.now() - DAY + 8 * 3600_000, openingFloat: 50000, countedCash: 537400, status: "closed", period: "1st shift", seedSales: 488200 },
+  { id: "S-202", staffId: "3", staffName: "Ada O.",  role: "cashier", branch: "lekki", openedAt: Date.now() - DAY, closedAt: Date.now() - DAY + 8 * 3600_000, openingFloat: 50000, countedCash: 662400, status: "closed", period: "2nd shift", seedSales: 612400 },
 ];
 
 const SEED_TABLES: TableRec[] = [
@@ -688,6 +887,17 @@ const SEED_BATCHES: Batch[] = [
   { id: "b3", sku: "BAR-SODA",    branch: "lekki", name: "Soda Water",      qty: 9,  unit: "L",   expiry: "2026-08-15", receivedAt: Date.now() - 4 * DAY },
 ];
 
+const SEED_STOCK_REQUESTS: StockRequest[] = [
+  {
+    id: "SR-001", branch: "lekki", toLocation: "kitchen", status: "Requested",
+    requestedBy: "Amara K.", requestedAt: Date.now() - 25 * 60000,
+    lines: [
+      { sku: "KIT-RICE", name: "Basmati Rice", unit: "kg", qty: 20 },
+      { sku: "KIT-GOAT", name: "Goat Meat",    unit: "kg", qty: 8 },
+    ],
+  },
+];
+
 const SEED_WALLETS: Wallet[] = [
   { branch: HUB_ID,   balance: 100000, float: 150000 },
   { branch: "lekki",  balance: 142000, float: 200000 },
@@ -724,15 +934,28 @@ const SEED_EXPENSES: ExpenseRequest[] = [
 
 const dateISO = (offsetDays: number) => new Date(Date.now() + offsetDays * DAY).toISOString().slice(0, 10);
 
+// Weekly schedules — array index 0..6 = Mon..Sun.
+const SCH_WEEKDAYS_1ST = ["1st shift", "1st shift", "1st shift", "1st shift", "1st shift", "Off", "Off"];
+const SCH_WEEKDAYS_2ND = ["2nd shift", "2nd shift", "2nd shift", "2nd shift", "2nd shift", "Off", "Off"];
+const SCH_TUE_TO_SAT_2ND = ["Off", "2nd shift", "2nd shift", "2nd shift", "2nd shift", "2nd shift", "Off"];
+const SCH_MON_TO_SAT_FULL = ["Full day", "Full day", "Full day", "Full day", "Full day", "Full day", "Off"];
+const SCH_WEEKDAYS_FULL = ["Full day", "Full day", "Full day", "Full day", "Full day", "Off", "Off"];
+
+// Helper — builds a seeded compliance document.
+const cDoc = (uploaded: boolean, fileName?: string, ageDays = 60): ComplianceDoc =>
+  uploaded
+    ? { uploaded: true, fileName, size: 142_336, uploadedAt: Date.now() - ageDays * DAY }
+    : { uploaded: false };
+
 const SEED_EMPLOYEES: Employee[] = [
-  { id: "e1", name: "Ada O.",    role: "Cashier",             branch: "lekki", phone: "+234 803 100 0001", nextOfKin: "Chidi Okafor",  hireDate: "2024-03-01", scheduledStart: "08:00", baseSalary: 120000, transport: 20000, housing: 30000, compliance: { guarantor: true,  contract: true,  idCard: true  }, certName: "Food handler cert", certExpiry: dateISO(45),  status: "Active" },
-  { id: "e2", name: "Bayo K.",   role: "Cashier",             branch: "lekki", phone: "+234 803 100 0002", nextOfKin: "Sade Kuti",     hireDate: "2024-07-15", scheduledStart: "08:00", baseSalary: 115000, transport: 20000, housing: 28000, compliance: { guarantor: true,  contract: true,  idCard: false }, certName: "Food handler cert", certExpiry: dateISO(60),  status: "Active" },
-  { id: "e3", name: "Chukwu B.", role: "Bartender",           branch: "lekki", phone: "+234 803 100 0003", nextOfKin: "Ngozi Eze",     hireDate: "2023-11-02", scheduledStart: "10:00", baseSalary: 110000, transport: 18000, housing: 25000, compliance: { guarantor: true,  contract: true,  idCard: true  }, certName: "Food handler cert", certExpiry: dateISO(7),   status: "Active" },
-  { id: "e4", name: "Amara K.",  role: "Head Chef",           branch: "lekki", phone: "+234 803 100 0004", nextOfKin: "Obi Kalu",      hireDate: "2022-05-20", scheduledStart: "07:00", baseSalary: 200000, transport: 30000, housing: 50000, compliance: { guarantor: true,  contract: true,  idCard: true  }, certName: "Food handler cert", certExpiry: dateISO(120), status: "Active" },
-  { id: "e5", name: "Eze M.",    role: "Storekeeper",         branch: "lekki", phone: "+234 803 100 0005", nextOfKin: "Uche Mba",      hireDate: "2023-02-10", scheduledStart: "07:30", baseSalary: 105000, transport: 18000, housing: 24000, compliance: { guarantor: true,  contract: true,  idCard: true  }, certName: "Food handler cert", certExpiry: dateISO(90),  status: "Active" },
-  { id: "e6", name: "Fatima L.", role: "Server",              branch: "lekki", phone: "+234 803 100 0006", nextOfKin: "Musa Lawal",    hireDate: "2025-01-08", scheduledStart: "09:00", baseSalary: 85000,  transport: 15000, housing: 18000, compliance: { guarantor: false, contract: true,  idCard: true  }, certName: "Food handler cert", certExpiry: dateISO(30),  status: "Active" },
-  { id: "e7", name: "Tunde A.",  role: "Operations Manager",  branch: "ikoyi", phone: "+234 803 100 0007", nextOfKin: "Bisi Adekunle", hireDate: "2021-09-01", scheduledStart: "08:00", baseSalary: 280000, transport: 40000, housing: 70000, compliance: { guarantor: true,  contract: true,  idCard: true  }, certName: "Food handler cert", certExpiry: dateISO(200), status: "Active" },
-  { id: "e8", name: "David K.",  role: "Server",              branch: "ikoyi", phone: "+234 803 100 0008", nextOfKin: "Grace Koko",    hireDate: "2024-10-12", scheduledStart: "09:00", baseSalary: 85000,  transport: 15000, housing: 18000, compliance: { guarantor: true,  contract: true,  idCard: true  }, certName: "Food handler cert", certExpiry: dateISO(50),  status: "Active" },
+  { id: "e1", name: "Ada O.",    role: "Cashier",             branch: "lekki", phone: "+234 803 100 0001", nextOfKin: "Chidi Okafor",  hireDate: "2024-03-01", scheduledStart: "08:00", baseSalary: 120000, transport: 20000, housing: 30000, compliance: { guarantor: cDoc(true, "guarantor-form.pdf"), contract: cDoc(true, "signed-contract.pdf"), idCard: cDoc(true, "id-card.jpg") }, certName: "Food handler cert", certExpiry: dateISO(45),  status: "Active", weeklySchedule: SCH_WEEKDAYS_1ST },
+  { id: "e2", name: "Bayo K.",   role: "Cashier",             branch: "lekki", phone: "+234 803 100 0002", nextOfKin: "Sade Kuti",     hireDate: "2024-07-15", scheduledStart: "08:00", baseSalary: 115000, transport: 20000, housing: 28000, compliance: { guarantor: cDoc(true, "guarantor-form.pdf"), contract: cDoc(true, "signed-contract.pdf"), idCard: cDoc(false) }, certName: "Food handler cert", certExpiry: dateISO(60),  status: "Active", weeklySchedule: SCH_WEEKDAYS_2ND },
+  { id: "e3", name: "Chukwu B.", role: "Bartender",           branch: "lekki", phone: "+234 803 100 0003", nextOfKin: "Ngozi Eze",     hireDate: "2023-11-02", scheduledStart: "10:00", baseSalary: 110000, transport: 18000, housing: 25000, compliance: { guarantor: cDoc(true, "guarantor-form.pdf"), contract: cDoc(true, "signed-contract.pdf"), idCard: cDoc(true, "id-card.jpg") }, certName: "Food handler cert", certExpiry: dateISO(7),   status: "Active", weeklySchedule: SCH_TUE_TO_SAT_2ND },
+  { id: "e4", name: "Amara K.",  role: "Head Chef",           branch: "lekki", phone: "+234 803 100 0004", nextOfKin: "Obi Kalu",      hireDate: "2022-05-20", scheduledStart: "07:00", baseSalary: 200000, transport: 30000, housing: 50000, compliance: { guarantor: cDoc(true, "guarantor-form.pdf"), contract: cDoc(true, "signed-contract.pdf"), idCard: cDoc(true, "id-card.jpg") }, certName: "Food handler cert", certExpiry: dateISO(120), status: "Active", weeklySchedule: SCH_MON_TO_SAT_FULL },
+  { id: "e5", name: "Eze M.",    role: "Storekeeper",         branch: "lekki", phone: "+234 803 100 0005", nextOfKin: "Uche Mba",      hireDate: "2023-02-10", scheduledStart: "07:30", baseSalary: 105000, transport: 18000, housing: 24000, compliance: { guarantor: cDoc(true, "guarantor-form.pdf"), contract: cDoc(true, "signed-contract.pdf"), idCard: cDoc(true, "id-card.jpg") }, certName: "Food handler cert", certExpiry: dateISO(90),  status: "Active", weeklySchedule: SCH_MON_TO_SAT_FULL },
+  { id: "e6", name: "Fatima L.", role: "Server",              branch: "lekki", phone: "+234 803 100 0006", nextOfKin: "Musa Lawal",    hireDate: "2025-01-08", scheduledStart: "09:00", baseSalary: 85000,  transport: 15000, housing: 18000, compliance: { guarantor: cDoc(false), contract: cDoc(true, "signed-contract.pdf"), idCard: cDoc(true, "id-card.jpg") }, certName: "Food handler cert", certExpiry: dateISO(30),  status: "Active", weeklySchedule: SCH_WEEKDAYS_1ST },
+  { id: "e7", name: "Tunde A.",  role: "Operations Manager",  branch: "ikoyi", phone: "+234 803 100 0007", nextOfKin: "Bisi Adekunle", hireDate: "2021-09-01", scheduledStart: "08:00", baseSalary: 280000, transport: 40000, housing: 70000, compliance: { guarantor: cDoc(true, "guarantor-form.pdf"), contract: cDoc(true, "signed-contract.pdf"), idCard: cDoc(true, "id-card.jpg") }, certName: "Food handler cert", certExpiry: dateISO(200), status: "Active", weeklySchedule: SCH_WEEKDAYS_FULL },
+  { id: "e8", name: "David K.",  role: "Server",              branch: "ikoyi", phone: "+234 803 100 0008", nextOfKin: "Grace Koko",    hireDate: "2024-10-12", scheduledStart: "09:00", baseSalary: 85000,  transport: 15000, housing: 18000, compliance: { guarantor: cDoc(true, "guarantor-form.pdf"), contract: cDoc(true, "signed-contract.pdf"), idCard: cDoc(true, "id-card.jpg") }, certName: "Food handler cert", certExpiry: dateISO(50),  status: "Active", weeklySchedule: SCH_TUE_TO_SAT_2ND },
 ];
 
 const SEED_ATTENDANCE: Attendance[] = [
@@ -769,12 +992,52 @@ const SEED_DELIVERIES: DeliveryJob[] = [
 ];
 
 const SEED_CUSTOMERS: Customer[] = [
-  { id: "c1", name: "Tola Bankole", phone: "+234 803 111 2200", email: "tola@mail.com", tier: "VIP",       birthday: "05-28", note: "Likes Grilled Tilapia · window seat", joinedAt: Date.now() - 300 * DAY, seedVisits: 42, seedSpend: 1820000, seedFavorite: "Grilled Tilapia", seedLastDays: 2 },
-  { id: "c2", name: "Nkechi A.",    phone: "+234 805 332 7781", email: "nkechi@mail.com", tier: "Regular", birthday: "11-04", note: "", joinedAt: Date.now() - 200 * DAY, seedVisits: 28, seedSpend: 940000, seedFavorite: "Suya Platter", seedLastDays: 1 },
-  { id: "c3", name: "Femi Okoro",   phone: "+234 802 998 1042", email: "femi@mail.com", tier: "Regular",  birthday: "05-12", note: "Complained about cold soup 2 weeks ago", joinedAt: Date.now() - 240 * DAY, seedVisits: 21, seedSpend: 712000, seedFavorite: "Pepper Soup", seedLastDays: 5 },
-  { id: "c4", name: "Sade Williams",phone: "+234 807 220 5519", email: "sade@mail.com", tier: "Regular",  birthday: "08-19", note: "", joinedAt: Date.now() - 120 * DAY, seedVisits: 12, seedSpend: 308000, seedFavorite: "Mojito", seedLastDays: 38 },
-  { id: "c5", name: "Idris M.",     phone: "+234 809 445 8830", email: "idris@mail.com", tier: "Regular", birthday: "02-09", note: "", joinedAt: Date.now() - 90 * DAY, seedVisits: 8, seedSpend: 184000, seedFavorite: "Jollof Rice", seedLastDays: 44 },
-  { id: "c6", name: "Acme Corp",    phone: "+234 814 777 0001", email: "orders@acme.ng", tier: "VIP",     note: "Corporate account · bulk lunch orders", joinedAt: Date.now() - 160 * DAY, seedVisits: 9, seedSpend: 2100000, seedFavorite: "Event catering", seedLastDays: 3 },
+  { id: "c1", name: "Tola Bankole", phone: "+234 803 111 2200", email: "tola@mail.com", tier: "VIP",       birthday: "05-28", note: "Likes Grilled Tilapia · window seat", joinedAt: Date.now() - 300 * DAY, seedVisits: 42, seedSpend: 1820000, seedFavorite: "Grilled Tilapia", seedLastDays: 2, wallet: 120000, credit: 0, creditLimit: 0 },
+  { id: "c2", name: "Nkechi A.",    phone: "+234 805 332 7781", email: "nkechi@mail.com", tier: "Regular", birthday: "11-04", note: "", joinedAt: Date.now() - 200 * DAY, seedVisits: 28, seedSpend: 940000, seedFavorite: "Suya Platter", seedLastDays: 1, wallet: 0, credit: 0, creditLimit: 0 },
+  { id: "c3", name: "Femi Okoro",   phone: "+234 802 998 1042", email: "femi@mail.com", tier: "Regular",  birthday: "05-12", note: "Complained about cold soup 2 weeks ago", joinedAt: Date.now() - 240 * DAY, seedVisits: 21, seedSpend: 712000, seedFavorite: "Pepper Soup", seedLastDays: 5, wallet: 0, credit: 0, creditLimit: 0 },
+  { id: "c4", name: "Sade Williams",phone: "+234 807 220 5519", email: "sade@mail.com", tier: "Regular",  birthday: "08-19", note: "", joinedAt: Date.now() - 120 * DAY, seedVisits: 12, seedSpend: 308000, seedFavorite: "Mojito", seedLastDays: 38, wallet: 0, credit: 0, creditLimit: 0 },
+  { id: "c5", name: "Idris M.",     phone: "+234 809 445 8830", email: "idris@mail.com", tier: "Regular", birthday: "02-09", note: "", joinedAt: Date.now() - 90 * DAY, seedVisits: 8, seedSpend: 184000, seedFavorite: "Jollof Rice", seedLastDays: 44, wallet: 0, credit: 0, creditLimit: 0 },
+  // Corporate house-account customer — pays month-end against a statement.
+  { id: "c6", name: "Acme Corp",    phone: "+234 814 777 0001", email: "orders@acme.ng", tier: "VIP",     note: "Corporate account · bulk lunch orders · net-30", joinedAt: Date.now() - 160 * DAY, seedVisits: 9, seedSpend: 2100000, seedFavorite: "Event catering", seedLastDays: 3, wallet: 0, credit: 142500, creditLimit: 500000 },
+];
+
+const SEED_LEDGER: CustomerLedgerEntry[] = [
+  // Tola — VIP prepaid wallet
+  { id: "L-seed1", customerId: "c1", branch: "lekki", at: Date.now() - 30 * DAY, kind: "wallet-topup", amount: 200000, note: "Top-up · transfer · prepay for the month", staffName: "Ada O." },
+  { id: "L-seed2", customerId: "c1", branch: "lekki", at: Date.now() - 10 * DAY, kind: "wallet-spend", amount: 32000, note: "Dinner · party of 2", staffName: "Ada O." },
+  { id: "L-seed3", customerId: "c1", branch: "lekki", at: Date.now() - 6 * DAY,  kind: "wallet-spend", amount: 28000, note: "Brunch", staffName: "Ada O." },
+  { id: "L-seed4", customerId: "c1", branch: "lekki", at: Date.now() - 2 * DAY,  kind: "wallet-spend", amount: 20000, note: "Friday drinks", staffName: "Ada O." },
+  // Acme Corp — house tab; 3 unbilled charges this period + last month's statement reminders
+  { id: "L-seed5", customerId: "c6", branch: "lekki", at: Date.now() - 24 * DAY, kind: "credit-charge", amount: 48000, note: "Corporate lunch · 12 trays", staffName: "Ada O." },
+  { id: "L-seed6", customerId: "c6", branch: "lekki", at: Date.now() - 17 * DAY, kind: "credit-charge", amount: 56000, note: "Boardroom lunch", staffName: "Ada O." },
+  { id: "L-seed7", customerId: "c6", branch: "lekki", at: Date.now() - 9 * DAY,  kind: "credit-charge", amount: 38500, note: "Friday team lunch", staffName: "Ada O." },
+];
+
+const SEED_INVOICES: CustomerInvoice[] = [
+  // One outstanding statement for Acme, sent + one reminder, overdue by ~6 days
+  {
+    id: "INV-2026-04-0001",
+    customerId: "c6",
+    customerName: "Acme Corp",
+    branch: "lekki",
+    periodStart: new Date(Date.now() - 60 * DAY).toISOString().slice(0, 10),
+    periodEnd:   new Date(Date.now() - 30 * DAY).toISOString().slice(0, 10),
+    issueDate:   new Date(Date.now() - 28 * DAY).toISOString().slice(0, 10),
+    dueDate:     new Date(Date.now() - 6 * DAY).toISOString().slice(0, 10),
+    status: "Overdue",
+    lines: [
+      { ledgerId: "L-arch1", orderId: "o-arch1", date: new Date(Date.now() - 55 * DAY).toISOString().slice(0, 10), description: "Corporate lunch · 15 trays", amount: 72000 },
+      { ledgerId: "L-arch2", orderId: "o-arch2", date: new Date(Date.now() - 50 * DAY).toISOString().slice(0, 10), description: "Quarterly review catering", amount: 145000 },
+    ],
+    subtotal: 217000,
+    paid: 0,
+    reminders: [
+      { at: Date.now() - 22 * DAY, kind: "pre-due", channel: "Email", sentBy: "Tunde A." },
+      { at: Date.now() - 6 * DAY,  kind: "on-due",  channel: "Email", sentBy: "Tunde A." },
+    ],
+    createdBy: "Tunde A.",
+    createdAt: Date.now() - 28 * DAY,
+  },
 ];
 
 const SEED_FEEDBACK: Feedback[] = [
@@ -847,6 +1110,7 @@ const SEED_STATE: StoreState = {
   branches: SEED_BRANCHES,
   currentBranch: "lekki",
   inventory: SEED_INVENTORY,
+  inventoryCategories: [...DEFAULT_INVENTORY_CATEGORIES],
   menu: SEED_MENU,
   shifts: SEED_SHIFTS,
   orders: SEED_ORDERS,
@@ -859,6 +1123,7 @@ const SEED_STATE: StoreState = {
   purchaseOrders: SEED_POS,
   priceChanges: SEED_PRICE_CHANGES,
   batches: SEED_BATCHES,
+  stockRequests: SEED_STOCK_REQUESTS,
   expenses: SEED_EXPENSES,
   wallets: SEED_WALLETS,
   employees: SEED_EMPLOYEES,
@@ -868,6 +1133,8 @@ const SEED_STATE: StoreState = {
   riders: SEED_RIDERS,
   deliveries: SEED_DELIVERIES,
   customers: SEED_CUSTOMERS,
+  customerLedger: SEED_LEDGER,
+  customerInvoices: SEED_INVOICES,
   feedback: SEED_FEEDBACK,
   complaints: SEED_COMPLAINTS,
   events: SEED_EVENTS,
@@ -882,7 +1149,7 @@ interface StoreValue extends StoreState {
   setBranch: (branchId: string) => void;
   branchName: (id: string) => string;
   // shifts
-  openShift: (staff: { id: string; name: string }, role: ShiftRole, openingFloat: number) => Shift;
+  openShift: (staff: { id: string; name: string }, role: ShiftRole, openingFloat: number, period?: string) => Shift;
   closeShift: (shiftId: string, countedCash: number) => void;
   activeShift: (staffId: string) => Shift | undefined;
   barShift: () => Shift | undefined;
@@ -900,15 +1167,25 @@ interface StoreValue extends StoreState {
     splitWays?: number;
     method: string;
     deliveryFee?: number;
+    hold?: boolean; // true = park the order unpaid ("On hold")
     staff: { id: string; name: string };
   }) => Order;
   voidOrder: (id: string, reason: string, by: string) => void;
+  closeOrder: (id: string, input: { payments: PaymentEntry[]; splitWays?: number; method: string; staff: { id: string; name: string } }) => void;
+  appendToOrder: (id: string, lines: OrderLine[], staff: { id: string; name: string }) => void;
   // inventory — all act on the current branch
   addInventoryItem: (item: InventoryItem) => void;
-  receiveStock: (sku: string, qty: number) => void;
-  recordStockCount: (sku: string, actual: number, by: { name: string; shiftId?: string }) => StockCount;
-  recordWaste: (input: { sku: string; qty: number; reason: string; staffName: string; shiftId?: string }) => WasteEntry;
+  receiveStock: (sku: string, location: StockLocation, qty: number, altQty?: number) => void;
+  recordStockCount: (sku: string, location: StockLocation, actual: number, by: { name: string; shiftId?: string }) => StockCount;
+  recordWaste: (input: { sku: string; location: StockLocation; qty: number; reason: string; staffName: string; shiftId?: string; photoName?: string; photoDataUrl?: string }) => WasteEntry;
   importInventory: (items: InventoryItem[]) => void;
+  // inventory categories — curated by owner/manager
+  addCategory: (name: string) => { ok: boolean; error?: string };
+  renameCategory: (oldName: string, newName: string) => { ok: boolean; error?: string };
+  removeCategory: (name: string) => { ok: boolean; error?: string };
+  // internal stock requests (branch Main Store → Kitchen / Bar / Juice Bar)
+  requestStock: (input: { toLocation: StockLocation; lines: { sku: string; qty: number }[]; by: string }) => StockRequest;
+  issueStockRequest: (id: string, by: string) => void;
   // menu
   addMenuItem: (item: MenuItem) => void;
   updateMenuItem: (item: MenuItem) => void;
@@ -928,6 +1205,8 @@ interface StoreValue extends StoreState {
   // procurement
   addVendor: (v: Omit<Vendor, "id">) => Vendor;
   createPO: (input: { vendorId: string; branch: string; expectedDate: string; lines: { sku: string; qtyOrdered: number; unitCost: number }[] }) => PurchaseOrder;
+  approvePO: (id: string, by: string) => void;
+  rejectPO: (id: string, by: string) => void;
   receivePO: (id: string, received: { sku: string; qtyReceived: number; unitCost: number; expiry?: string }[], by: string) => void;
   markPOPaid: (id: string) => void;
   // expenses & petty cash
@@ -941,6 +1220,8 @@ interface StoreValue extends StoreState {
   // hr & payroll
   addEmployee: (e: Omit<Employee, "id">) => Employee;
   updateEmployee: (e: Employee) => void;
+  offboardEmployee: (id: string, reason: string, by: string) => void;
+  reactivateEmployee: (id: string, by: string) => void;
   clockIn: (employeeId: string) => void;
   clockOut: (employeeId: string) => void;
   logDisciplinary: (input: { employeeId: string; type: IncidentType; description: string; action: string; by: string }) => void;
@@ -960,6 +1241,15 @@ interface StoreValue extends StoreState {
   addComplaint: (input: { customerName: string; phone?: string; subject: string; detail: string; severity: "Low" | "High"; by: string }) => void;
   setComplaintStatus: (id: string, status: ComplaintStatus) => void;
   contactCustomer: (id: string, kind: string) => void;
+  // customer accounts — wallet (prepaid) and house tab (credit)
+  topUpCustomerWallet: (input: { customerId: string; amount: number; method: string; note?: string; by: string }) => { ok: boolean; error?: string };
+  spendCustomerWallet: (input: { customerId: string; amount: number; orderId?: string; note?: string; by: string }) => { ok: boolean; error?: string };
+  chargeCustomerAccount: (input: { customerId: string; amount: number; orderId?: string; note?: string; by: string; override?: boolean }) => { ok: boolean; error?: string };
+  recordCustomerPayment: (input: { customerId: string; amount: number; method: string; invoiceId?: string; note?: string; by: string }) => { ok: boolean; error?: string };
+  setCustomerCreditLimit: (customerId: string, limit: number, by: string) => void;
+  generateCustomerInvoice: (input: { customerId: string; periodStart: string; periodEnd: string; dueDate: string; by: string }) => { ok: boolean; error?: string; invoiceId?: string };
+  sendInvoiceReminder: (invoiceId: string, kind: ReminderKind, channel: "Email" | "SMS", by: string) => { ok: boolean; error?: string };
+  voidInvoice: (invoiceId: string, by: string) => void;
   // events
   addEvent: (input: { name: string; date: string; venue: string; guests: number; package: string; value: number; deposit: number; costs: EventCost[] }) => RestaurantEvent;
   recordEventDeposit: (id: string, amount: number) => void;
@@ -971,7 +1261,7 @@ interface StoreValue extends StoreState {
 
 const StoreContext = createContext<StoreValue | null>(null);
 
-const STORAGE_KEY = "haven11_store_v11";
+const STORAGE_KEY = "haven11_store_v19";
 
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
@@ -1045,17 +1335,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const shift = state.shifts.find((s) => s.id === shiftId);
       if (shift?.seedSales != null) return shift.seedSales;
       return state.orders
-        .filter((o) => o.shiftId === shiftId && !o.voided)
+        .filter((o) => o.shiftId === shiftId && !o.voided && o.status === "Closed")
         .reduce((s, o) => s + o.total, 0);
     },
     [state.shifts, state.orders],
   );
 
-  const openShift = useCallback<StoreValue["openShift"]>((staff, role, openingFloat) => {
+  const openShift = useCallback<StoreValue["openShift"]>((staff, role, openingFloat, period) => {
     const shift: Shift = {
       id: uid("S"), staffId: staff.id, staffName: staff.name, role,
       branch: stateRef.current.currentBranch,
-      openedAt: Date.now(), openingFloat, status: "open",
+      openedAt: Date.now(), openingFloat, status: "open", period,
     };
     setState((p) => ({ ...p, shifts: [shift, ...p.shifts] }));
     return shift;
@@ -1065,7 +1355,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setState((p) => {
       const sh = p.shifts.find((s) => s.id === shiftId);
       if (!sh) return p;
-      const sales = sh.seedSales ?? p.orders.filter((o) => o.shiftId === shiftId && !o.voided).reduce((sum, o) => sum + o.total, 0);
+      const sales = sh.seedSales ?? p.orders.filter((o) => o.shiftId === shiftId && !o.voided && o.status === "Closed").reduce((sum, o) => sum + o.total, 0);
       const variance = countedCash - (sh.openingFloat + sales);
       const entry = audit({
         branch: sh.branch, actor: sh.staffName, category: "Finance", action: "Shift closed",
@@ -1110,6 +1400,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       staffName: input.staff.name,
       shiftId: shift?.id,
       at: Date.now(),
+      status: input.hold ? "On hold" : "Closed",
     };
 
     // A discount is an override worth recording in the audit trail.
@@ -1166,13 +1457,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
 
     setState((p) => {
-      // Deduct recipe ingredients from THIS branch's stock.
+      // Deduct recipe ingredients from the relevant sub-store of THIS branch.
       const inventory = p.inventory.map((inv) => ({ ...inv }));
       for (const line of input.lines) {
         const menuItem = p.menu.find((m) => m.name === line.name);
         if (!menuItem) continue;
         for (const r of menuItem.recipe) {
-          const inv = inventory.find((i) => i.sku === r.sku && i.branch === branch);
+          const prodLine = inventory.find((i) => i.sku === r.sku)?.line;
+          const loc = prodLine ? locationForLine(prodLine) : "kitchen";
+          const inv = inventory.find((i) => i.sku === r.sku && i.branch === branch && i.location === loc);
           if (inv) inv.onHand = Math.max(0, +(inv.onHand - r.qty * line.qty).toFixed(4));
         }
       }
@@ -1182,7 +1475,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const phone = input.customer.phone;
         if (!p.customers.some((c) => c.phone === phone)) {
           customers = [
-            { id: uid("cust"), name: input.customer.name, phone, tier: "New", joinedAt: Date.now() },
+            { id: uid("cust"), name: input.customer.name, phone, tier: "New", joinedAt: Date.now(), wallet: 0, credit: 0, creditLimit: 0 },
             ...p.customers,
           ];
         }
@@ -1210,7 +1503,9 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const mi = p.menu.find((m) => m.name === line.name);
         if (!mi) continue;
         for (const r of mi.recipe) {
-          const inv = inventory.find((i) => i.sku === r.sku && i.branch === order.branch);
+          const prodLine = inventory.find((i) => i.sku === r.sku)?.line;
+          const loc = prodLine ? locationForLine(prodLine) : "kitchen";
+          const inv = inventory.find((i) => i.sku === r.sku && i.branch === order.branch && i.location === loc);
           if (inv) inv.onHand = +(inv.onHand + r.qty * line.qty).toFixed(4);
         }
       }
@@ -1229,28 +1524,149 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  // Close a held ("On hold") order once payment is collected.
+  const closeOrder = useCallback<StoreValue["closeOrder"]>((id, input) => {
+    setState((p) => {
+      const order = p.orders.find((o) => o.id === id);
+      if (!order || order.voided || order.status === "Closed") return p;
+      const shift = p.shifts.find((x) => x.staffId === input.staff.id && x.status === "open");
+      return {
+        ...p,
+        orders: p.orders.map((o) =>
+          o.id === id
+            ? {
+                ...o,
+                status: "Closed" as const,
+                payments: input.payments,
+                method: input.method,
+                splitWays: input.splitWays && input.splitWays > 1 ? input.splitWays : undefined,
+                shiftId: shift?.id ?? o.shiftId,
+              }
+            : o,
+        ),
+      };
+    });
+  }, []);
+
+  // Append items to an open ("On hold") tab — fires fresh tickets, deducts their stock.
+  const appendToOrder = useCallback<StoreValue["appendToOrder"]>((id, newLines) => {
+    if (newLines.length === 0) return;
+    setState((p) => {
+      const order = p.orders.find((o) => o.id === id);
+      if (!order || order.voided || order.status === "Closed") return p;
+      const branch = order.branch;
+
+      // Deduct recipe stock for the appended lines from the relevant sub-store.
+      const inventory = p.inventory.map((inv) => ({ ...inv }));
+      for (const line of newLines) {
+        const menuItem = p.menu.find((m) => m.name === line.name);
+        if (!menuItem) continue;
+        for (const r of menuItem.recipe) {
+          const prodLine = inventory.find((i) => i.sku === r.sku)?.line;
+          const loc = prodLine ? locationForLine(prodLine) : "kitchen";
+          const inv = inventory.find((i) => i.sku === r.sku && i.branch === branch && i.location === loc);
+          if (inv) inv.onHand = Math.max(0, +(inv.onHand - r.qty * line.qty).toFixed(4));
+        }
+      }
+
+      // Fire kitchen / bar tickets for the appended lines only.
+      const barCats = new Set(["Drinks", "Cocktails"]);
+      const label = order.channel === "Dine-in"
+        ? order.table
+        : `${order.channel} · ${order.customer?.name ?? "Guest"}`;
+      const toTicketItem = (line: OrderLine): TicketItem => {
+        const parts = [...(line.modifiers ?? []).map((m) => m.label)];
+        if (line.note) parts.push(line.note);
+        return { name: line.name, qty: line.qty, detail: parts.length ? parts.join(", ") : undefined };
+      };
+      const kitchenItems: TicketItem[] = [];
+      const barItems: TicketItem[] = [];
+      for (const line of newLines) {
+        const mi = p.menu.find((m) => m.name === line.name);
+        (mi && barCats.has(mi.category) ? barItems : kitchenItems).push(toTicketItem(line));
+      }
+      const newTickets: Ticket[] = [];
+      if (kitchenItems.length) newTickets.push({ id: uid("KT"), branch, orderId: id, station: "Kitchen", label, channel: order.channel, items: kitchenItems, status: "New", createdAt: Date.now() });
+      if (barItems.length) newTickets.push({ id: uid("BT"), branch, orderId: id, station: "Bar", label, channel: order.channel, items: barItems, status: "New", createdAt: Date.now() });
+
+      // Recompute order totals with the appended lines.
+      const lines = [...order.lines, ...newLines];
+      const subtotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
+      const discount = order.discount ?? 0;
+      const vat = Math.round((subtotal - discount) * 0.075);
+      const total = subtotal - discount + vat;
+
+      return {
+        ...p,
+        inventory,
+        orders: p.orders.map((o) => (o.id === id ? { ...o, lines, subtotal, vat, total } : o)),
+        tickets: [...newTickets, ...p.tickets],
+      };
+    });
+  }, []);
+
   const addInventoryItem = useCallback<StoreValue["addInventoryItem"]>((item) => {
     setState((p) => ({ ...p, inventory: [{ ...item, branch: item.branch || p.currentBranch }, ...p.inventory] }));
   }, []);
 
-  const receiveStock = useCallback<StoreValue["receiveStock"]>((sku, qty) => {
+  const addCategory = useCallback<StoreValue["addCategory"]>((rawName) => {
+    const name = rawName.trim();
+    if (!name) return { ok: false, error: "Enter a category name" };
+    const exists = stateRef.current.inventoryCategories.some((c) => c.toLowerCase() === name.toLowerCase());
+    if (exists) return { ok: false, error: `"${name}" already exists` };
+    setState((p) => ({ ...p, inventoryCategories: [...p.inventoryCategories, name] }));
+    return { ok: true };
+  }, []);
+
+  const renameCategory = useCallback<StoreValue["renameCategory"]>((oldName, rawNew) => {
+    const next = rawNew.trim();
+    if (!next) return { ok: false, error: "Enter a category name" };
+    if (next === oldName) return { ok: true };
+    const collision = stateRef.current.inventoryCategories.some(
+      (c) => c !== oldName && c.toLowerCase() === next.toLowerCase(),
+    );
+    if (collision) return { ok: false, error: `"${next}" already exists` };
     setState((p) => ({
       ...p,
-      inventory: p.inventory.map((i) =>
-        i.sku === sku && i.branch === p.currentBranch ? { ...i, onHand: +(i.onHand + qty).toFixed(4) } : i,
-      ),
+      inventoryCategories: p.inventoryCategories.map((c) => (c === oldName ? next : c)),
+      // Cascade the rename across every stock row so filters and search keep working.
+      inventory: p.inventory.map((i) => (i.category === oldName ? { ...i, category: next } : i)),
+    }));
+    return { ok: true };
+  }, []);
+
+  const removeCategory = useCallback<StoreValue["removeCategory"]>((name) => {
+    const inUse = stateRef.current.inventory.some((i) => i.category === name);
+    if (inUse) {
+      return { ok: false, error: `"${name}" is used by one or more products — reassign them first` };
+    }
+    setState((p) => ({ ...p, inventoryCategories: p.inventoryCategories.filter((c) => c !== name) }));
+    return { ok: true };
+  }, []);
+
+  const receiveStock = useCallback<StoreValue["receiveStock"]>((sku, location, qty, altQty) => {
+    setState((p) => ({
+      ...p,
+      inventory: p.inventory.map((i) => {
+        if (i.sku !== sku || i.branch !== p.currentBranch || i.location !== location) return i;
+        return {
+          ...i,
+          onHand: +(i.onHand + qty).toFixed(4),
+          altOnHand: altQty != null && i.altUnit ? +((i.altOnHand ?? 0) + altQty).toFixed(4) : i.altOnHand,
+        };
+      }),
     }));
   }, []);
 
-  const recordStockCount = useCallback<StoreValue["recordStockCount"]>((sku, actual, by) => {
+  const recordStockCount = useCallback<StoreValue["recordStockCount"]>((sku, location, actual, by) => {
     const branch = stateRef.current.currentBranch;
-    const inv = stateRef.current.inventory.find((i) => i.sku === sku && i.branch === branch)!;
+    const inv = stateRef.current.inventory.find((i) => i.sku === sku && i.branch === branch && i.location === location)!;
     const variance = +(actual - inv.onHand).toFixed(4);
     const created: StockCount = {
-      id: uid("VC"), branch, sku, name: inv.name, line: inv.line,
+      id: uid("VC"), branch, location, sku, name: inv.name, line: inv.line,
       expected: inv.onHand, actual, variance,
       varianceCost: Math.round(variance * inv.cost),
-      overPour: inv.line === "Bar" && variance < 0,
+      overPour: location === "bar" && variance < 0,
       staffName: by.name, shiftId: by.shiftId, at: Date.now(),
     };
     const countEntry = variance !== 0
@@ -1263,7 +1679,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       : null;
     setState((p) => ({
       ...p,
-      inventory: p.inventory.map((i) => (i.sku === sku && i.branch === branch ? { ...i, onHand: actual } : i)),
+      inventory: p.inventory.map((i) => (i.sku === sku && i.branch === branch && i.location === location ? { ...i, onHand: actual } : i)),
       counts: [created, ...p.counts],
       auditLog: countEntry ? [countEntry, ...p.auditLog] : p.auditLog,
     }));
@@ -1272,11 +1688,13 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const recordWaste = useCallback<StoreValue["recordWaste"]>((input) => {
     const branch = stateRef.current.currentBranch;
-    const inv = stateRef.current.inventory.find((i) => i.sku === input.sku && i.branch === branch)!;
+    const inv = stateRef.current.inventory.find((i) => i.sku === input.sku && i.branch === branch && i.location === input.location)!;
     const created: WasteEntry = {
-      id: uid("W"), branch, sku: input.sku, name: inv.name, qty: input.qty, unit: inv.unit,
+      id: uid("W"), branch, location: input.location, sku: input.sku, name: inv.name, qty: input.qty, unit: inv.unit,
       reason: input.reason, cost: Math.round(input.qty * inv.cost),
       staffName: input.staffName, shiftId: input.shiftId, at: Date.now(),
+      photoName: input.photoName,
+      photoDataUrl: input.photoDataUrl,
     };
     const wasteEntry = audit({
       branch, actor: input.staffName, category: "Inventory", action: "Waste logged",
@@ -1286,7 +1704,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setState((p) => ({
       ...p,
       inventory: p.inventory.map((i) =>
-        i.sku === input.sku && i.branch === branch ? { ...i, onHand: Math.max(0, +(i.onHand - input.qty).toFixed(4)) } : i,
+        i.sku === input.sku && i.branch === branch && i.location === input.location ? { ...i, onHand: Math.max(0, +(i.onHand - input.qty).toFixed(4)) } : i,
       ),
       waste: [created, ...p.waste],
       auditLog: [wasteEntry, ...p.auditLog],
@@ -1297,10 +1715,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const importInventory = useCallback<StoreValue["importInventory"]>((items) => {
     setState((p) => {
       const branch = p.currentBranch;
-      const keyed = new Map(p.inventory.map((i) => [`${i.branch}:${i.sku}`, i]));
+      const keyed = new Map(p.inventory.map((i) => [`${i.branch}:${i.location}:${i.sku}`, i]));
       for (const it of items) {
         const row = { ...it, branch };
-        keyed.set(`${branch}:${row.sku}`, row);
+        keyed.set(`${branch}:${row.location}:${row.sku}`, row);
       }
       return { ...p, inventory: Array.from(keyed.values()) };
     });
@@ -1425,7 +1843,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const issuedMap = new Map(issued.map((x) => [x.sku, x.qty]));
       // Deduct issued quantities from the Strong Room.
       const inventory = p.inventory.map((i) => {
-        if (i.branch !== HUB_ID) return i;
+        if (i.branch !== HUB_ID || i.location !== "store") return i;
         const q = issuedMap.get(i.sku);
         return q != null ? { ...i, onHand: Math.max(0, +(i.onHand - q).toFixed(4)) } : i;
       });
@@ -1464,12 +1882,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const got = recvMap.get(l.sku) ?? l.qtyIssued ?? l.qtyRequested;
         if (l.qtyIssued != null && got < l.qtyIssued) disputed = true;
         // Add received stock to the destination branch (create the row if absent).
-        const row = inventory.find((i) => i.sku === l.sku && i.branch === transfer.toBranch);
+        const row = inventory.find((i) => i.sku === l.sku && i.branch === transfer.toBranch && i.location === "store");
         if (row) {
           row.onHand = +(row.onHand + got).toFixed(4);
         } else {
           const tmpl = p.inventory.find((i) => i.sku === l.sku);
-          if (tmpl) inventory.push({ ...tmpl, branch: transfer.toBranch, onHand: got });
+          if (tmpl) inventory.push({ ...tmpl, branch: transfer.toBranch, location: "store", onHand: got });
         }
         return { ...l, qtyReceived: got };
       });
@@ -1486,6 +1904,59 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         transfers: p.transfers.map((t) =>
           t.id === id ? { ...t, status: disputed ? "Disputed" : "Received", lines, receivedBy: by, receivedAt: Date.now() } : t,
         ),
+        auditLog: [entry, ...p.auditLog],
+      };
+    });
+  }, []);
+
+  // ── Internal stock requests (Main Store → Kitchen / Bar / Juice Bar) ───────
+
+  const requestStock = useCallback<StoreValue["requestStock"]>((input) => {
+    const s = stateRef.current;
+    const lines: StockReqLine[] = input.lines.map((l) => {
+      const prod = s.inventory.find((i) => i.sku === l.sku);
+      return { sku: l.sku, name: prod?.name ?? l.sku, unit: prod?.unit ?? "", qty: l.qty };
+    });
+    const created: StockRequest = {
+      id: `SR-${String(s.stockRequests.length + 1).padStart(3, "0")}`,
+      branch: s.currentBranch,
+      toLocation: input.toLocation,
+      lines,
+      status: "Requested",
+      requestedBy: input.by,
+      requestedAt: Date.now(),
+    };
+    setState((p) => ({ ...p, stockRequests: [created, ...p.stockRequests] }));
+    return created;
+  }, []);
+
+  const issueStockRequest = useCallback<StoreValue["issueStockRequest"]>((id, by) => {
+    setState((p) => {
+      const req = p.stockRequests.find((r) => r.id === id);
+      if (!req || req.status === "Issued") return p;
+      const inventory = p.inventory.map((i) => ({ ...i }));
+      for (const l of req.lines) {
+        // Deduct from the branch Main Store.
+        const from = inventory.find((i) => i.sku === l.sku && i.branch === req.branch && i.location === "store");
+        if (from) from.onHand = Math.max(0, +(from.onHand - l.qty).toFixed(4));
+        // Add to the destination sub-store, creating the row if absent.
+        const to = inventory.find((i) => i.sku === l.sku && i.branch === req.branch && i.location === req.toLocation);
+        if (to) {
+          to.onHand = +(to.onHand + l.qty).toFixed(4);
+        } else {
+          const tmpl = p.inventory.find((i) => i.sku === l.sku);
+          if (tmpl) inventory.push({ ...tmpl, branch: req.branch, location: req.toLocation, onHand: l.qty, reorder: 0 });
+        }
+      }
+      const entry = audit({
+        branch: req.branch, actor: by, category: "Inventory", action: "Stock issued to section",
+        detail: `${id} → ${LOCATION_NAME[req.toLocation]} · ${req.lines.length} item${req.lines.length !== 1 ? "s" : ""}`,
+        ref: id, severity: "info",
+      });
+      return {
+        ...p,
+        inventory,
+        stockRequests: p.stockRequests.map((r) => (r.id === id ? { ...r, status: "Issued", issuedBy: by, issuedAt: Date.now() } : r)),
         auditLog: [entry, ...p.auditLog],
       };
     });
@@ -1513,11 +1984,48 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     const created: PurchaseOrder = {
       id: `PO-${new Date().getFullYear()}-${seq}`,
       vendorId: input.vendorId, branch: input.branch, lines,
-      status: "Ordered", expectedDate: input.expectedDate, createdAt: Date.now(),
+      status: "Pending Approval", expectedDate: input.expectedDate, createdAt: Date.now(),
       total, paid: false,
     };
     setState((p) => ({ ...p, purchaseOrders: [created, ...p.purchaseOrders] }));
     return created;
+  }, []);
+
+  // Branch purchase orders need management approval before they go to the vendor.
+  const approvePO = useCallback<StoreValue["approvePO"]>((id, by) => {
+    setState((p) => {
+      const po = p.purchaseOrders.find((x) => x.id === id);
+      if (!po || po.status !== "Pending Approval") return p;
+      const vendorName = p.vendors.find((v) => v.id === po.vendorId)?.name ?? "Vendor";
+      const entry = audit({
+        branch: po.branch, actor: by, category: "Procurement", action: "Purchase order approved",
+        detail: `${po.id} · ${vendorName} · ₦${po.total.toLocaleString()}`,
+        ref: po.id, amount: po.total, severity: "info",
+      });
+      return {
+        ...p,
+        purchaseOrders: p.purchaseOrders.map((x) => (x.id === id ? { ...x, status: "Ordered" } : x)),
+        auditLog: [entry, ...p.auditLog],
+      };
+    });
+  }, []);
+
+  const rejectPO = useCallback<StoreValue["rejectPO"]>((id, by) => {
+    setState((p) => {
+      const po = p.purchaseOrders.find((x) => x.id === id);
+      if (!po || po.status !== "Pending Approval") return p;
+      const vendorName = p.vendors.find((v) => v.id === po.vendorId)?.name ?? "Vendor";
+      const entry = audit({
+        branch: po.branch, actor: by, category: "Procurement", action: "Purchase order rejected",
+        detail: `${po.id} · ${vendorName} · ₦${po.total.toLocaleString()}`,
+        ref: po.id, amount: po.total, severity: "warning",
+      });
+      return {
+        ...p,
+        purchaseOrders: p.purchaseOrders.map((x) => (x.id === id ? { ...x, status: "Rejected" } : x)),
+        auditLog: [entry, ...p.auditLog],
+      };
+    });
   }, []);
 
   const receivePO = useCallback<StoreValue["receivePO"]>((id, received, by) => {
@@ -1535,12 +2043,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         const r = recvMap.get(line.sku);
         if (!r || r.qtyReceived <= 0) continue;
         // Add received stock to the delivery branch (create the row if absent).
-        const row = inventory.find((i) => i.sku === line.sku && i.branch === po.branch);
+        const row = inventory.find((i) => i.sku === line.sku && i.branch === po.branch && i.location === "store");
         if (row) {
           row.onHand = +(row.onHand + r.qtyReceived).toFixed(4);
         } else {
           const tmpl = p.inventory.find((i) => i.sku === line.sku);
-          if (tmpl) inventory.push({ ...tmpl, branch: po.branch, onHand: r.qtyReceived });
+          if (tmpl) inventory.push({ ...tmpl, branch: po.branch, location: "store", onHand: r.qtyReceived });
         }
         // Price-change variance — log it and roll the cost forward.
         const curCost = p.inventory.find((i) => i.sku === line.sku)?.cost ?? r.unitCost;
@@ -1714,6 +2222,45 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setState((p) => ({ ...p, employees: p.employees.map((x) => (x.id === e.id ? e : x)) }));
   }, []);
 
+  // Offboard — mark the employee as offboarded without deleting their record.
+  const offboardEmployee = useCallback<StoreValue["offboardEmployee"]>((id, reason, by) => {
+    setState((p) => {
+      const emp = p.employees.find((e) => e.id === id);
+      if (!emp || emp.status === "Offboarded") return p;
+      const entry = audit({
+        branch: emp.branch, actor: by, category: "HR", action: "Staff offboarded",
+        detail: `${emp.name} · ${reason || "no reason given"}`,
+        ref: id, severity: "warning",
+      });
+      return {
+        ...p,
+        employees: p.employees.map((e) =>
+          e.id === id ? { ...e, status: "Offboarded" as const, offboardedAt: Date.now(), offboardReason: reason } : e,
+        ),
+        auditLog: [entry, ...p.auditLog],
+      };
+    });
+  }, []);
+
+  const reactivateEmployee = useCallback<StoreValue["reactivateEmployee"]>((id, by) => {
+    setState((p) => {
+      const emp = p.employees.find((e) => e.id === id);
+      if (!emp || emp.status === "Active") return p;
+      const entry = audit({
+        branch: emp.branch, actor: by, category: "HR", action: "Staff reactivated",
+        detail: `${emp.name} · back on the active roster`,
+        ref: id, severity: "info",
+      });
+      return {
+        ...p,
+        employees: p.employees.map((e) =>
+          e.id === id ? { ...e, status: "Active" as const, offboardedAt: undefined, offboardReason: undefined } : e,
+        ),
+        auditLog: [entry, ...p.auditLog],
+      };
+    });
+  }, []);
+
   const clockIn = useCallback<StoreValue["clockIn"]>((employeeId) => {
     setState((p) => {
       const emp = p.employees.find((e) => e.id === employeeId);
@@ -1766,7 +2313,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       let shortageDeduction = 0;
       for (const sh of s.shifts) {
         if (sh.staffName !== e.name || sh.countedCash == null) continue;
-        const sales = sh.seedSales ?? s.orders.filter((o) => o.shiftId === sh.id && !o.voided).reduce((sum, o) => sum + o.total, 0);
+        const sales = sh.seedSales ?? s.orders.filter((o) => o.shiftId === sh.id && !o.voided && o.status === "Closed").reduce((sum, o) => sum + o.total, 0);
         const variance = sh.countedCash - (sh.openingFloat + sales);
         if (variance < 0) shortageDeduction += -variance;
       }
@@ -1870,6 +2417,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     const created: Customer = {
       id: uid("cust"), name: input.name, phone: input.phone, email: input.email,
       tier: input.tier ?? "New", birthday: input.birthday, joinedAt: Date.now(),
+      wallet: 0, credit: 0, creditLimit: 0,
     };
     setState((p) => ({ ...p, customers: [created, ...p.customers] }));
     return created;
@@ -1936,6 +2484,254 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  // ── Customer accounts — wallet (prepaid) + house tab (credit) ──────────────
+
+  /** Internal helper: push a ledger entry + audit-log it. */
+  function appendLedger(entry: Omit<CustomerLedgerEntry, "id" | "at">, severity: AuditEntry["severity"] = "info") {
+    const branch = stateRef.current.currentBranch;
+    const full: CustomerLedgerEntry = { ...entry, id: uid("L"), at: Date.now() };
+    setState((p) => ({ ...p, customerLedger: [full, ...p.customerLedger] }));
+    const c = stateRef.current.customers.find((x) => x.id === entry.customerId);
+    setState((p) => ({
+      ...p,
+      auditLog: [
+        { id: uid("AUD"), at: Date.now(), branch, actor: entry.staffName, category: "Finance",
+          action: friendlyLedgerLabel(entry.kind),
+          detail: `${c?.name ?? "Customer"} · ₦${entry.amount.toLocaleString()}${entry.note ? ` · ${entry.note}` : ""}`,
+          ref: entry.customerId, severity,
+        },
+        ...p.auditLog,
+      ],
+    }));
+    return full;
+  }
+
+  const topUpCustomerWallet = useCallback<StoreValue["topUpCustomerWallet"]>((input) => {
+    const amt = Math.round(input.amount);
+    if (amt <= 0) return { ok: false, error: "Top-up amount must be positive" };
+    const c = stateRef.current.customers.find((x) => x.id === input.customerId);
+    if (!c) return { ok: false, error: "Customer not found" };
+    setState((p) => ({
+      ...p,
+      customers: p.customers.map((x) => x.id === input.customerId ? { ...x, wallet: x.wallet + amt } : x),
+    }));
+    appendLedger({
+      customerId: input.customerId, branch: stateRef.current.currentBranch,
+      kind: "wallet-topup", amount: amt,
+      note: `${input.method}${input.note ? ` · ${input.note}` : ""}`,
+      staffName: input.by,
+    });
+    return { ok: true };
+  }, []);
+
+  const spendCustomerWallet = useCallback<StoreValue["spendCustomerWallet"]>((input) => {
+    const amt = Math.round(input.amount);
+    if (amt <= 0) return { ok: false, error: "Amount must be positive" };
+    const c = stateRef.current.customers.find((x) => x.id === input.customerId);
+    if (!c) return { ok: false, error: "Customer not found" };
+    if (c.wallet < amt) {
+      return { ok: false, error: `Insufficient wallet balance — has ₦${c.wallet.toLocaleString()}, needs ₦${amt.toLocaleString()}` };
+    }
+    setState((p) => ({
+      ...p,
+      customers: p.customers.map((x) => x.id === input.customerId ? { ...x, wallet: x.wallet - amt } : x),
+    }));
+    appendLedger({
+      customerId: input.customerId, branch: stateRef.current.currentBranch,
+      kind: "wallet-spend", amount: amt, orderId: input.orderId,
+      note: input.note ?? (input.orderId ? `Order ${input.orderId}` : undefined),
+      staffName: input.by,
+    });
+    return { ok: true };
+  }, []);
+
+  const chargeCustomerAccount = useCallback<StoreValue["chargeCustomerAccount"]>((input) => {
+    const amt = Math.round(input.amount);
+    if (amt <= 0) return { ok: false, error: "Amount must be positive" };
+    const c = stateRef.current.customers.find((x) => x.id === input.customerId);
+    if (!c) return { ok: false, error: "Customer not found" };
+    if (c.creditLimit <= 0) return { ok: false, error: "House charges are not enabled for this customer — set a credit limit first" };
+    if (!input.override && c.credit + amt > c.creditLimit) {
+      return { ok: false, error: `Over credit limit — would bring balance to ₦${(c.credit + amt).toLocaleString()} (limit ₦${c.creditLimit.toLocaleString()}). Collect payment first or get a manager override.` };
+    }
+    setState((p) => ({
+      ...p,
+      customers: p.customers.map((x) => x.id === input.customerId ? { ...x, credit: x.credit + amt } : x),
+    }));
+    appendLedger({
+      customerId: input.customerId, branch: stateRef.current.currentBranch,
+      kind: "credit-charge", amount: amt, orderId: input.orderId,
+      note: input.note ?? (input.orderId ? `Order ${input.orderId}` : undefined),
+      staffName: input.by,
+    }, c.credit + amt >= c.creditLimit * 0.8 ? "warning" : "info");
+    return { ok: true };
+  }, []);
+
+  const recordCustomerPayment = useCallback<StoreValue["recordCustomerPayment"]>((input) => {
+    const amt = Math.round(input.amount);
+    if (amt <= 0) return { ok: false, error: "Payment must be positive" };
+    const c = stateRef.current.customers.find((x) => x.id === input.customerId);
+    if (!c) return { ok: false, error: "Customer not found" };
+    if (c.credit <= 0) return { ok: false, error: "Customer has no outstanding balance" };
+    const applied = Math.min(amt, c.credit);
+    setState((p) => ({
+      ...p,
+      customers: p.customers.map((x) => x.id === input.customerId ? { ...x, credit: Math.max(0, x.credit - applied) } : x),
+    }));
+    // Apply to a specific invoice if given, otherwise to the oldest open one.
+    let invoiceIdApplied = input.invoiceId;
+    if (!invoiceIdApplied) {
+      const oldest = stateRef.current.customerInvoices
+        .filter((i) => i.customerId === input.customerId && i.status !== "Paid" && i.status !== "Void")
+        .sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0];
+      invoiceIdApplied = oldest?.id;
+    }
+    if (invoiceIdApplied) {
+      const targetId = invoiceIdApplied;
+      setState((p) => ({
+        ...p,
+        customerInvoices: p.customerInvoices.map((inv) => {
+          if (inv.id !== targetId) return inv;
+          const paid = inv.paid + applied;
+          const status: InvoiceStatus =
+            paid >= inv.subtotal ? "Paid"
+            : paid > 0 ? "Partially Paid"
+            : inv.status;
+          return { ...inv, paid, status };
+        }),
+      }));
+    }
+    appendLedger({
+      customerId: input.customerId, branch: stateRef.current.currentBranch,
+      kind: "credit-payment", amount: applied, invoiceId: invoiceIdApplied,
+      note: `${input.method}${input.note ? ` · ${input.note}` : ""}${invoiceIdApplied ? ` · against ${invoiceIdApplied}` : ""}`,
+      staffName: input.by,
+    });
+    return { ok: true };
+  }, []);
+
+  const setCustomerCreditLimit = useCallback<StoreValue["setCustomerCreditLimit"]>((customerId, limit, by) => {
+    const sanitized = Math.max(0, Math.round(limit));
+    const c = stateRef.current.customers.find((x) => x.id === customerId);
+    if (!c) return;
+    setState((p) => ({
+      ...p,
+      customers: p.customers.map((x) => x.id === customerId ? { ...x, creditLimit: sanitized } : x),
+      auditLog: [
+        { id: uid("AUD"), at: Date.now(), branch: stateRef.current.currentBranch, actor: by, category: "Finance",
+          action: "Credit limit changed",
+          detail: `${c.name} · ₦${c.creditLimit.toLocaleString()} → ₦${sanitized.toLocaleString()}`,
+          ref: customerId, severity: "info" },
+        ...p.auditLog,
+      ],
+    }));
+  }, []);
+
+  const generateCustomerInvoice = useCallback<StoreValue["generateCustomerInvoice"]>((input) => {
+    const c = stateRef.current.customers.find((x) => x.id === input.customerId);
+    if (!c) return { ok: false, error: "Customer not found" };
+    // Find unbilled house charges that fall inside the period and aren't already on an invoice.
+    const billedIds = new Set(
+      stateRef.current.customerInvoices
+        .filter((i) => i.customerId === input.customerId && i.status !== "Void")
+        .flatMap((i) => i.lines.map((l) => l.ledgerId)),
+    );
+    const start = new Date(input.periodStart).getTime();
+    const end = new Date(input.periodEnd).getTime() + 86400_000 - 1; // include the end-of-day
+    const unbilled = stateRef.current.customerLedger
+      .filter((e) =>
+        e.customerId === input.customerId
+        && e.kind === "credit-charge"
+        && e.at >= start && e.at <= end
+        && !billedIds.has(e.id),
+      )
+      .sort((a, b) => a.at - b.at);
+    if (unbilled.length === 0) {
+      return { ok: false, error: "No unbilled charges in this period" };
+    }
+    const subtotal = unbilled.reduce((s, e) => s + e.amount, 0);
+    const now = new Date();
+    const yyyymm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const existingCount = stateRef.current.customerInvoices.filter((i) => i.id.startsWith(`INV-${yyyymm}`)).length;
+    const invoiceId = `INV-${yyyymm}-${String(existingCount + 1).padStart(4, "0")}`;
+    const invoice: CustomerInvoice = {
+      id: invoiceId,
+      customerId: input.customerId,
+      customerName: c.name,
+      branch: stateRef.current.currentBranch,
+      periodStart: input.periodStart,
+      periodEnd: input.periodEnd,
+      issueDate: now.toISOString().slice(0, 10),
+      dueDate: input.dueDate,
+      status: "Draft",
+      lines: unbilled.map((e) => ({
+        ledgerId: e.id,
+        orderId: e.orderId,
+        date: new Date(e.at).toISOString().slice(0, 10),
+        description: e.note ?? "House charge",
+        amount: e.amount,
+      })),
+      subtotal,
+      paid: 0,
+      reminders: [],
+      createdBy: input.by,
+      createdAt: Date.now(),
+    };
+    setState((p) => ({
+      ...p,
+      customerInvoices: [invoice, ...p.customerInvoices],
+      auditLog: [
+        { id: uid("AUD"), at: Date.now(), branch: stateRef.current.currentBranch, actor: input.by, category: "Finance",
+          action: "Statement generated",
+          detail: `${c.name} · ${invoiceId} · ${unbilled.length} charges · ₦${subtotal.toLocaleString()}`,
+          ref: invoiceId, severity: "info" },
+        ...p.auditLog,
+      ],
+    }));
+    return { ok: true, invoiceId };
+  }, []);
+
+  const sendInvoiceReminder = useCallback<StoreValue["sendInvoiceReminder"]>((invoiceId, kind, channel, by) => {
+    const inv = stateRef.current.customerInvoices.find((i) => i.id === invoiceId);
+    if (!inv) return { ok: false, error: "Invoice not found" };
+    if (inv.status === "Paid" || inv.status === "Void") {
+      return { ok: false, error: `Invoice is ${inv.status.toLowerCase()} — no reminder needed` };
+    }
+    const newStatus: InvoiceStatus = inv.status === "Draft"
+      ? "Sent"
+      : (kind === "overdue-7" || kind === "overdue-14" || kind === "overdue-30") ? "Overdue" : inv.status;
+    setState((p) => ({
+      ...p,
+      customerInvoices: p.customerInvoices.map((i) =>
+        i.id === invoiceId
+          ? { ...i, status: newStatus, reminders: [...i.reminders, { at: Date.now(), kind, channel, sentBy: by }] }
+          : i,
+      ),
+      auditLog: [
+        { id: uid("AUD"), at: Date.now(), branch: stateRef.current.currentBranch, actor: by, category: "Finance",
+          action: "Statement reminder sent",
+          detail: `${inv.customerName} · ${invoiceId} · ${friendlyReminderLabel(kind)} via ${channel}`,
+          ref: invoiceId, severity: kind === "overdue-30" ? "warning" : "info" },
+        ...p.auditLog,
+      ],
+    }));
+    return { ok: true };
+  }, []);
+
+  const voidInvoice = useCallback<StoreValue["voidInvoice"]>((invoiceId, by) => {
+    const inv = stateRef.current.customerInvoices.find((i) => i.id === invoiceId);
+    if (!inv) return;
+    setState((p) => ({
+      ...p,
+      customerInvoices: p.customerInvoices.map((i) => i.id === invoiceId ? { ...i, status: "Void" } : i),
+      auditLog: [
+        { id: uid("AUD"), at: Date.now(), branch: stateRef.current.currentBranch, actor: by, category: "Finance",
+          action: "Statement voided", detail: `${inv.customerName} · ${invoiceId}`, ref: invoiceId, severity: "warning" },
+        ...p.auditLog,
+      ],
+    }));
+  }, []);
+
   // ── Events & banquets ──────────────────────────────────────────────────────
 
   const addEvent = useCallback<StoreValue["addEvent"]>((input) => {
@@ -1995,30 +2791,38 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       products,
       setBranch, branchName,
       openShift, closeShift, activeShift, barShift, shiftSales,
-      recordSale, voidOrder,
+      recordSale, voidOrder, closeOrder, appendToOrder,
       addInventoryItem, receiveStock, recordStockCount, recordWaste, importInventory,
+      addCategory, renameCategory, removeCategory,
+      requestStock, issueStockRequest,
       addMenuItem, updateMenuItem, importMenu, recipeCost,
       seatTable, freeTable, advanceTicket, markTicketReady,
       requestTransfer, approveTransfer, rejectTransfer, issueTransfer, receiveTransfer,
-      addVendor, createPO, receivePO, markPOPaid,
+      addVendor, createPO, approvePO, rejectPO, receivePO, markPOPaid,
       walletOf, requestExpense, approveExpense, rejectExpense, disburseExpense, reconcileExpense, topUpWallet,
-      addEmployee, updateEmployee, clockIn, clockOut, logDisciplinary, runPayroll,
+      addEmployee, updateEmployee, offboardEmployee, reactivateEmployee, clockIn, clockOut, logDisciplinary, runPayroll,
       addRider, setRiderStatus, advanceDelivery, assignDelivery, completeDelivery, settleCOD, logFleetExpense,
       addCustomer, updateCustomer, recordFeedback, addComplaint, setComplaintStatus, contactCustomer,
+      topUpCustomerWallet, spendCustomerWallet, chargeCustomerAccount, recordCustomerPayment,
+      setCustomerCreditLimit, generateCustomerInvoice, sendInvoiceReminder, voidInvoice,
       addEvent, recordEventDeposit, advanceEventStatus,
       logAudit, resetAll,
     }),
     [state, hydrated, products, setBranch, branchName,
-     openShift, closeShift, activeShift, barShift, shiftSales, recordSale, voidOrder,
+     openShift, closeShift, activeShift, barShift, shiftSales, recordSale, voidOrder, closeOrder, appendToOrder,
      addInventoryItem, receiveStock, recordStockCount, recordWaste, importInventory,
+     addCategory, renameCategory, removeCategory,
+     requestStock, issueStockRequest,
      addMenuItem, updateMenuItem, importMenu, recipeCost,
      seatTable, freeTable, advanceTicket, markTicketReady,
      requestTransfer, approveTransfer, rejectTransfer, issueTransfer, receiveTransfer,
-     addVendor, createPO, receivePO, markPOPaid,
+     addVendor, createPO, approvePO, rejectPO, receivePO, markPOPaid,
      walletOf, requestExpense, approveExpense, rejectExpense, disburseExpense, reconcileExpense, topUpWallet,
-     addEmployee, updateEmployee, clockIn, clockOut, logDisciplinary, runPayroll,
+     addEmployee, updateEmployee, offboardEmployee, reactivateEmployee, clockIn, clockOut, logDisciplinary, runPayroll,
      addRider, setRiderStatus, advanceDelivery, assignDelivery, completeDelivery, settleCOD, logFleetExpense,
      addCustomer, updateCustomer, recordFeedback, addComplaint, setComplaintStatus, contactCustomer,
+     topUpCustomerWallet, spendCustomerWallet, chargeCustomerAccount, recordCustomerPayment,
+     setCustomerCreditLimit, generateCustomerInvoice, sendInvoiceReminder, voidInvoice,
      addEvent, recordEventDeposit, advanceEventStatus, logAudit, resetAll],
   );
 
@@ -2032,6 +2836,38 @@ export function useStore() {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Human-readable label for a ledger entry kind — used by the audit log. */
+function friendlyLedgerLabel(kind: LedgerKind): string {
+  switch (kind) {
+    case "wallet-topup":     return "Wallet top-up";
+    case "wallet-spend":     return "Wallet spend";
+    case "wallet-refund":    return "Wallet refund";
+    case "credit-charge":    return "House charge";
+    case "credit-payment":   return "House account payment";
+    case "credit-writeoff":  return "House debt written off";
+  }
+}
+
+/** Human-readable label for a reminder cadence. */
+export function friendlyReminderLabel(kind: ReminderKind): string {
+  switch (kind) {
+    case "pre-due":     return "3 days before due";
+    case "on-due":      return "Due today";
+    case "overdue-7":   return "7 days overdue";
+    case "overdue-14":  return "14 days overdue";
+    case "overdue-30":  return "30 days overdue · final notice";
+  }
+}
+
+/** Bucket a number-of-days-overdue value into the standard A/R aging windows. */
+export function agingBucket(daysOverdue: number): "Current" | "1-30" | "31-60" | "61-90" | "90+" {
+  if (daysOverdue <= 0) return "Current";
+  if (daysOverdue <= 30) return "1-30";
+  if (daysOverdue <= 60) return "31-60";
+  if (daysOverdue <= 90) return "61-90";
+  return "90+";
+}
 
 export function fmtQty(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
@@ -2053,6 +2889,11 @@ export function sentimentOf(text: string): Sentiment {
   for (const w of POS_WORDS) if (t.includes(w)) score++;
   for (const w of NEG_WORDS) if (t.includes(w)) score--;
   return score > 0 ? "Positive" : score < 0 ? "Negative" : "Neutral";
+}
+
+/** True when any of the three compliance documents is missing. */
+export function complianceGap(e: Employee): boolean {
+  return !e.compliance.guarantor.uploaded || !e.compliance.contract.uploaded || !e.compliance.idCard.uploaded;
 }
 
 /** Whole days from now until an ISO date — negative if already past. */

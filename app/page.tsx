@@ -24,21 +24,23 @@ export default function Dashboard() {
 
   const branch = store.currentBranch;
   const orders = store.orders.filter((o) => !o.voided && o.branch === branch);
-  const salesToday = orders.reduce((s, o) => s + o.total, 0);
+  // Only paid (Closed) orders count as revenue — held orders are not yet sales.
+  const paidOrders = orders.filter((o) => o.status === "Closed");
+  const salesToday = paidOrders.reduce((s, o) => s + o.total, 0);
   const covers = orders.reduce((s, o) => s + (o.guests ?? 0), 0);
 
   // Revenue by channel
   const channels = ["Dine-in", "Takeout", "Delivery"] as const;
   const byChannel = channels.map((c) => ({
     name: c,
-    value: orders.filter((o) => o.channel === c).reduce((s, o) => s + o.total, 0),
+    value: paidOrders.filter((o) => o.channel === c).reduce((s, o) => s + o.total, 0),
   }));
 
   // Inventory health per line
-  const lines: Line[] = ["Kitchen", "Bar", "Lounge"];
+  const lines: Line[] = ["Kitchen", "Bar", "Juice Bar", "Lounge"];
   const health = lines
     .map((line) => {
-      const items = store.inventory.filter((i) => i.line === line && i.branch === branch);
+      const items = store.inventory.filter((i) => i.line === line && i.branch === branch && i.location === "store");
       return {
         name: line,
         ok: items.filter((i) => statusOf(i) === "OK").length,
@@ -68,7 +70,7 @@ export default function Dashboard() {
   ];
 
   const kpis = [
-    { label: "Sales today", value: `₦${salesToday.toLocaleString()}`, hint: `${orders.length} orders` },
+    { label: "Sales today", value: `₦${salesToday.toLocaleString()}`, hint: `${paidOrders.length} paid orders` },
     { label: "Covers seated", value: String(covers), hint: "dine-in guests" },
     { label: "Open tickets", value: String(openTickets), hint: "kitchen + bar" },
     { label: "Stock alerts", value: String(lowStock.length), hint: "low / out", tone: lowStock.length > 0 ? "text-warning" : undefined },
@@ -177,7 +179,10 @@ export default function Dashboard() {
                 <tbody>
                   {orders.slice(0, 6).map((o) => (
                     <tr key={o.id} className="border-b border-border last:border-0 hover:bg-surface/50">
-                      <td className="px-5 py-3 font-medium tabular-nums">#{o.id}</td>
+                      <td className="px-5 py-3 font-medium tabular-nums">
+                        #{o.id}
+                        {o.status === "On hold" && <span className="ml-2 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold text-foreground align-middle">Held</span>}
+                      </td>
                       <td className="px-5 py-3 text-muted-foreground">
                         {o.channel === "Dine-in" ? o.table : `${o.channel} · ${o.customer?.name ?? ""}`}
                       </td>

@@ -1,7 +1,10 @@
 "use client";
 
-import { Clock, CheckCircle2, ChefHat } from "lucide-react";
+import { useState } from "react";
+import { Clock, CheckCircle2, ChefHat, PackagePlus, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { StockRequestModal } from "@/components/StockRequestModal";
+import { WasteModal } from "@/components/WasteModal";
 import { useStore, type Ticket, type TicketStatus } from "@/lib/store";
 
 const statusCfg: Record<TicketStatus, { bg: string; border: string; badge: string; label: string }> = {
@@ -22,6 +25,8 @@ function ageMins(ts: number) {
 
 export default function KitchenHome() {
   const store = useStore();
+  const [reqOpen, setReqOpen] = useState(false);
+  const [wasteOpen, setWasteOpen] = useState(false);
   const tickets = store.tickets.filter((t) => t.station === "Kitchen" && t.branch === store.currentBranch);
 
   const counts = {
@@ -32,6 +37,24 @@ export default function KitchenHome() {
 
   return (
     <AppShell title="Kitchen" subtitle="Live order queue — tickets arrive from the POS">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold">Order queue</h2>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setReqOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
+          >
+            <PackagePlus className="h-3.5 w-3.5" />Request stock
+          </button>
+          <button
+            onClick={() => setWasteOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
+          >
+            <Trash2 className="h-3.5 w-3.5" />Record waste
+          </button>
+        </div>
+      </div>
+
       <div className="grid grid-cols-3 gap-3">
         {[
           { label: "Waiting",  count: counts.new,       color: "text-sky-600",    dot: "bg-sky-400" },
@@ -59,6 +82,9 @@ export default function KitchenHome() {
           {tickets.map((t) => <KitchenTicket key={t.id} ticket={t} onAdvance={() => store.advanceTicket(t.id)} />)}
         </div>
       )}
+
+      {reqOpen && <StockRequestModal toLocation="kitchen" onClose={() => setReqOpen(false)} />}
+      <WasteModal open={wasteOpen} onClose={() => setWasteOpen(false)} location="kitchen" />
     </AppShell>
   );
 }

@@ -52,10 +52,10 @@ export function ShiftBanner() {
         {startOpen && (
           <StartShiftModal
             onClose={() => setStartOpen(false)}
-            onConfirm={(float) => {
-              store.openShift({ id: user.id, name: user.name }, role, float);
+            onConfirm={(float, period) => {
+              store.openShift({ id: user.id, name: user.name }, role, float, period);
               setStartOpen(false);
-              toast.success(`Shift started · float ₦${float.toLocaleString()}`);
+              toast.success(`${period} started · float ₦${float.toLocaleString()}`);
             }}
           />
         )}
@@ -96,31 +96,47 @@ export function ShiftBanner() {
 
 // ── Start shift ──────────────────────────────────────────────────────────────
 
-function StartShiftModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: (float: number) => void }) {
+/** A branch can run one shift a day or several — staff pick the period on clock-in. */
+const SHIFT_PERIODS = ["Full day", "1st shift", "2nd shift", "3rd shift"];
+
+function StartShiftModal({ onClose, onConfirm }: { onClose: () => void; onConfirm: (float: number, period: string) => void }) {
   const [float, setFloat] = useState("50000");
+  const [period, setPeriod] = useState(SHIFT_PERIODS[0]);
+  const fieldCls = "mt-1 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base outline-none focus:border-primary focus:ring-1 focus:ring-primary";
   return (
     <Modal
       open
       onClose={onClose}
       title="Start shift"
-      description="Count the cash already in your drawer"
+      description="Pick your shift period and count the cash in your drawer"
       footer={
         <>
           <ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton>
-          <ModalButton onClick={() => onConfirm(Number(float) || 0)}>Clock in</ModalButton>
+          <ModalButton onClick={() => onConfirm(Number(float) || 0, period)}>Clock in</ModalButton>
         </>
       }
     >
-      <label className="block">
-        <span className="text-xs font-medium text-muted-foreground">Opening cash float ₦</span>
-        <input
-          type="number"
-          value={float}
-          onChange={(e) => setFloat(e.target.value)}
-          autoFocus
-          className="mt-1 w-full rounded-lg border border-border bg-background px-3 py-2.5 text-base outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-        />
-      </label>
+      <div className="space-y-4">
+        <label className="block">
+          <span className="text-xs font-medium text-muted-foreground">Shift period</span>
+          <select value={period} onChange={(e) => setPeriod(e.target.value)} className={fieldCls}>
+            {SHIFT_PERIODS.map((p) => <option key={p}>{p}</option>)}
+          </select>
+          <span className="mt-1 block text-[11px] text-muted-foreground">
+            Use &ldquo;Full day&rdquo; for a single-shift branch, or 1st / 2nd / 3rd for multiple shifts.
+          </span>
+        </label>
+        <label className="block">
+          <span className="text-xs font-medium text-muted-foreground">Opening cash float ₦</span>
+          <input
+            type="number"
+            value={float}
+            onChange={(e) => setFloat(e.target.value)}
+            autoFocus
+            className={fieldCls}
+          />
+        </label>
+      </div>
     </Modal>
   );
 }
@@ -136,7 +152,7 @@ function CloseShiftModal({ shiftId, onClose }: { shiftId: string; onClose: () =>
   const [counted, setCounted] = useState("");
   // Bartenders count their bar stock at close — this is where over-pour surfaces.
   const barItems = shift.role === "bartender"
-    ? store.inventory.filter((i) => i.line === "Bar" && i.branch === store.currentBranch)
+    ? store.inventory.filter((i) => i.location === "bar" && i.branch === store.currentBranch)
     : [];
   const [barCounts, setBarCounts] = useState<Record<string, string>>({});
 
@@ -150,7 +166,7 @@ function CloseShiftModal({ shiftId, onClose }: { shiftId: string; onClose: () =>
     for (const item of barItems) {
       const raw = barCounts[item.sku];
       if (raw == null || raw.trim() === "") continue;
-      const result = store.recordStockCount(item.sku, Number(raw) || 0, {
+      const result = store.recordStockCount(item.sku, "bar", Number(raw) || 0, {
         name: shift.staffName,
         shiftId,
       });

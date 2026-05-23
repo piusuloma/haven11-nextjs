@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Modal, ModalButton } from "@/components/Modal";
 import { useAuth } from "@/lib/auth";
 import { useStore, fmtQty, HUB_ID, type Transfer, type TransferStatus } from "@/lib/store";
-import { ArrowRight, Plus, Trash2, ClipboardList, Truck, PackageCheck, AlertTriangle } from "lucide-react";
+import { ArrowRight, Plus, ClipboardList, Truck, PackageCheck, AlertTriangle, Receipt, Search, X, CheckSquare, Square } from "lucide-react";
 
 const statusClass: Record<TransferStatus, string> = {
   Requested: "bg-warning/15 text-foreground",
@@ -31,6 +31,7 @@ export default function Transfers() {
   const [creating, setCreating] = useState(false);
   const [issuing, setIssuing] = useState<Transfer | null>(null);
   const [receiving, setReceiving] = useState<Transfer | null>(null);
+  const [viewing, setViewing] = useState<Transfer | null>(null);
 
   const me = user?.name ?? "You";
   const atHub = store.currentBranch === HUB_ID;
@@ -98,10 +99,15 @@ export default function Transfers() {
                 transfer={t}
                 fromName={store.branchName(t.fromBranch)}
                 toName={store.branchName(t.toBranch)}
+                // Source-side actions (approve / reject / issue) are only
+                // available when the viewer is currently in the source branch.
+                // A branch never sees Approve / Reject on its own request.
+                viewerIsSource={store.currentBranch === t.fromBranch}
                 onApprove={() => { store.approveTransfer(t.id, me); toast.success(`${t.id} approved`); }}
                 onReject={() => { store.rejectTransfer(t.id, me); toast.error(`${t.id} rejected`); }}
                 onIssue={() => setIssuing(t)}
                 onReceive={() => setReceiving(t)}
+                onReceipt={() => setViewing(t)}
               />
             ))}
           </ul>
@@ -147,6 +153,7 @@ export default function Transfers() {
           }}
         />
       )}
+      {viewing && <ReceiptModal transfer={viewing} onClose={() => setViewing(null)} />}
     </AppShell>
   );
 }
@@ -154,15 +161,19 @@ export default function Transfers() {
 // ── Transfer row ─────────────────────────────────────────────────────────────
 
 function TransferRow({
-  transfer, fromName, toName, onApprove, onReject, onIssue, onReceive,
+  transfer, fromName, toName, viewerIsSource, onApprove, onReject, onIssue, onReceive, onReceipt,
 }: {
   transfer: Transfer;
   fromName: string;
   toName: string;
+  /** True when the viewer is currently in the *source* branch (the Strong Room
+   *  for branch requests). Approve / Reject / Issue are source-side actions. */
+  viewerIsSource: boolean;
   onApprove: () => void;
   onReject: () => void;
   onIssue: () => void;
   onReceive: () => void;
+  onReceipt: () => void;
 }) {
   const t = transfer;
   return (
@@ -200,21 +211,38 @@ function TransferRow({
           {t.valueAtCost != null && ` · waybill value ₦${t.valueAtCost.toLocaleString()} (at cost)`}
           {t.status === "Disputed" && " · goods-in-transit loss flagged to Super Admin"}
         </p>
-        <div className="flex gap-1.5">
+        <div className="flex items-center gap-1.5">
           {t.status === "Requested" && (
-            <>
-              <button onClick={onReject} className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">Reject</button>
-              <button onClick={onApprove} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">Approve</button>
-            </>
+            viewerIsSource ? (
+              <>
+                <button onClick={onReject} className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">Reject</button>
+                <button onClick={onApprove} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">Approve</button>
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground italic">Awaiting {fromName} approval</span>
+            )
           )}
           {t.status === "Approved" && (
-            <button onClick={onIssue} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
-              <Truck className="h-3.5 w-3.5" />Issue &amp; generate waybill
-            </button>
+            viewerIsSource ? (
+              <button onClick={onIssue} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
+                <Truck className="h-3.5 w-3.5" />Issue &amp; generate waybill
+              </button>
+            ) : (
+              <span className="text-xs text-muted-foreground italic">Approved · {fromName} preparing</span>
+            )
           )}
           {t.status === "Issued" && (
-            <button onClick={onReceive} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
-              <PackageCheck className="h-3.5 w-3.5" />{toName} receives
+            viewerIsSource ? (
+              <span className="text-xs text-muted-foreground italic">In transit · awaiting {toName} receipt</span>
+            ) : (
+              <button onClick={onReceive} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
+                <PackageCheck className="h-3.5 w-3.5" />{toName} receives
+              </button>
+            )
+          )}
+          {(t.status === "Issued" || t.status === "Received" || t.status === "Disputed") && (
+            <button onClick={onReceipt} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">
+              <Receipt className="h-3.5 w-3.5" />Receipt
             </button>
           )}
         </div>
@@ -225,6 +253,12 @@ function TransferRow({
 
 // ── New request modal ────────────────────────────────────────────────────────
 
+/**
+ * Mirror of `StockRequestModal` (sub-store flow) for the branch → Strong Room
+ * flow. A checklist picker rather than a "+ add row" loop, because operators
+ * routinely request 30–50 items at once. Live availability at the Strong Room
+ * is shown beside each item so the requester knows what's actually in stock.
+ */
 function NewTransferModal({
   onClose, onSubmit,
 }: {
@@ -233,20 +267,82 @@ function NewTransferModal({
 }) {
   const store = useStore();
   const [reason, setReason] = useState("Low stock");
-  const [rows, setRows] = useState<{ sku: string; qty: string }[]>([
-    { sku: store.products[0]?.sku ?? "", qty: "" },
-  ]);
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<string>("All");
+  // sku → quantity string. Presence in the map = ticked.
+  const [picked, setPicked] = useState<Record<string, string>>({});
 
-  function update(i: number, key: "sku" | "qty", val: string) {
-    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, [key]: val } : r)));
+  // Source-of-truth for what can be requested: the Strong Room's Main Store.
+  const hubItems = useMemo(
+    () => store.inventory.filter((i) => i.branch === HUB_ID && i.location === "store"),
+    [store.inventory],
+  );
+
+  // Only show categories that have at least one item in the hub.
+  const presentCategories = useMemo(() => {
+    const set = new Set<string>(hubItems.map((i) => i.category));
+    return ["All", ...store.inventoryCategories.filter((c) => set.has(c))];
+  }, [hubItems, store.inventoryCategories]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return hubItems.filter((i) => {
+      const matchesQ = !q
+        || i.name.toLowerCase().includes(q)
+        || i.sku.toLowerCase().includes(q)
+        || i.category.toLowerCase().includes(q);
+      const matchesCat = category === "All" || i.category === category;
+      return matchesQ && matchesCat;
+    });
+  }, [hubItems, query, category]);
+
+  // Group the filtered list by category so a 50-row pick stays scannable.
+  const grouped = useMemo(() => {
+    const m = new Map<string, typeof filtered>();
+    for (const it of filtered) {
+      const arr = m.get(it.category) ?? [];
+      arr.push(it);
+      m.set(it.category, arr);
+    }
+    return Array.from(m.entries()).sort(([a], [b]) => a.localeCompare(b));
+  }, [filtered]);
+
+  function toggle(sku: string) {
+    setPicked((prev) => {
+      if (sku in prev) {
+        const next = { ...prev };
+        delete next[sku];
+        return next;
+      }
+      return { ...prev, [sku]: "" };
+    });
   }
+  function setQty(sku: string, qty: string) {
+    setPicked((prev) => ({ ...prev, [sku]: qty }));
+  }
+  function tickAllVisible() {
+    setPicked((prev) => {
+      const next = { ...prev };
+      for (const it of filtered) if (!(it.sku in next)) next[it.sku] = "";
+      return next;
+    });
+  }
+  function clearAll() { setPicked({}); }
+
+  const pickedCount = Object.keys(picked).length;
+  const readyCount = Object.values(picked).filter((q) => Number(q) > 0).length;
+  const totalQty = Object.values(picked).reduce((s, q) => s + (Number(q) || 0), 0);
+  const allVisibleTicked = filtered.length > 0 && filtered.every((i) => i.sku in picked);
 
   function submit() {
-    const valid = rows
-      .filter((r) => r.sku && Number(r.qty) > 0)
-      .map((r) => ({ sku: r.sku, qty: Number(r.qty) }));
-    if (valid.length === 0) { toast.error("Add at least one item with a quantity"); return; }
-    onSubmit(valid, reason.trim() || "Restock");
+    const lines = Object.entries(picked)
+      .filter(([, q]) => Number(q) > 0)
+      .map(([sku, q]) => ({ sku, qty: Number(q) }));
+    if (lines.length === 0) {
+      toast.error(pickedCount > 0 ? "Enter a quantity for the ticked items" : "Tick at least one item");
+      return;
+    }
+    onSubmit(lines, reason.trim() || "Restock");
   }
 
   return (
@@ -254,47 +350,127 @@ function NewTransferModal({
       open
       onClose={onClose}
       title="Request stock from the Strong Room"
-      description={`Destination: ${store.branchName(store.currentBranch)}`}
-      size="lg"
-      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={submit}>Submit request</ModalButton></>}
+      description={`Destination: ${store.branchName(store.currentBranch)} · tick, enter qty, send one request`}
+      size="xl"
+      footer={
+        <>
+          <span className="mr-auto text-xs text-muted-foreground tabular-nums">
+            {pickedCount === 0 ? "No items selected" : `${readyCount}/${pickedCount} ready · ${fmtQty(totalQty)} total units`}
+          </span>
+          <ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton>
+          <ModalButton onClick={submit}>Submit request</ModalButton>
+        </>
+      }
     >
-      <div className="space-y-4">
-        <label className="block">
-          <span className="text-xs font-medium text-muted-foreground">Reason</span>
-          <select value={reason} onChange={(e) => setReason(e.target.value)} className={inputCls}>
-            {["Low stock", "Event prep", "Spoilage replacement", "Emergency"].map((r) => <option key={r}>{r}</option>)}
-          </select>
-        </label>
+      {hubItems.length === 0 ? (
+        <p className="text-sm text-muted-foreground">The Strong Room has no stock to request.</p>
+      ) : (
+        <div className="space-y-3">
+          <label className="block">
+            <span className="text-xs font-medium text-muted-foreground">Reason</span>
+            <select value={reason} onChange={(e) => setReason(e.target.value)} className={inputCls}>
+              {["Low stock", "Event prep", "Spoilage replacement", "Emergency"].map((r) => <option key={r}>{r}</option>)}
+            </select>
+          </label>
 
-        <div>
-          <p className="text-xs font-medium text-muted-foreground mb-2">Items requested</p>
-          <div className="space-y-2">
-            {rows.map((r, i) => {
-              const prod = store.products.find((p) => p.sku === r.sku);
-              return (
-                <div key={i} className="flex gap-2">
-                  <select value={r.sku} onChange={(e) => update(i, "sku", e.target.value)} className={`${inputCls} flex-1`}>
-                    {store.products.map((p) => <option key={p.sku} value={p.sku}>{p.name}</option>)}
-                  </select>
-                  <input value={r.qty} onChange={(e) => update(i, "qty", e.target.value)} type="number" placeholder="Qty" className={`${inputCls} w-24`} />
-                  <span className="grid w-12 shrink-0 place-items-center text-xs text-muted-foreground">{prod?.unit}</span>
-                  {rows.length > 1 && (
-                    <button onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))} aria-label="Remove" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border text-muted-foreground hover:text-destructive hover:bg-destructive/10">
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+          {/* Search + bulk actions */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 flex-1 min-w-[200px]">
+              <Search className="h-4 w-4 text-muted-foreground" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search by name, SKU or category…"
+                className="bg-transparent text-sm outline-none w-full placeholder:text-muted-foreground"
+              />
+              {query && (
+                <button onClick={() => setQuery("")} aria-label="Clear search" className="text-muted-foreground hover:text-foreground">
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={allVisibleTicked ? clearAll : tickAllVisible}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
+            >
+              {allVisibleTicked ? <CheckSquare className="h-3.5 w-3.5 text-primary" /> : <Square className="h-3.5 w-3.5" />}
+              {allVisibleTicked ? "Untick all" : "Tick all visible"}
+            </button>
           </div>
-          <button
-            onClick={() => setRows((prev) => [...prev, { sku: store.products[0]?.sku ?? "", qty: "" }])}
-            className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline"
-          >
-            <Plus className="h-3.5 w-3.5" />Add another item
-          </button>
+
+          {/* Category chips */}
+          <div className="flex flex-wrap gap-1.5">
+            {presentCategories.map((c) => (
+              <button
+                key={c}
+                onClick={() => setCategory(c)}
+                className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${category === c ? "bg-primary text-primary-foreground" : "bg-surface text-foreground/70 hover:text-foreground"}`}
+              >
+                {c}
+              </button>
+            ))}
+          </div>
+
+          {/* Item list, grouped by category */}
+          <div className="max-h-[55vh] overflow-y-auto rounded-xl border border-border">
+            {filtered.length === 0 ? (
+              <p className="p-6 text-center text-sm text-muted-foreground">No items match your search.</p>
+            ) : (
+              grouped.map(([cat, rows]) => (
+                <div key={cat}>
+                  <div className="sticky top-0 z-10 flex items-center justify-between bg-surface/90 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground backdrop-blur">
+                    <span>{cat}</span>
+                    <span className="tabular-nums">{rows.length}</span>
+                  </div>
+                  <ul>
+                    {rows.map((it) => {
+                      const ticked = it.sku in picked;
+                      return (
+                        <li
+                          key={it.sku}
+                          className={`flex items-center gap-3 border-b border-border px-3 py-2 last:border-0 ${ticked ? "bg-primary/5" : "hover:bg-surface/40"}`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggle(it.sku)}
+                            aria-label={ticked ? `Untick ${it.name}` : `Tick ${it.name}`}
+                            className={`grid h-5 w-5 shrink-0 place-items-center rounded border ${ticked ? "border-primary bg-primary text-primary-foreground" : "border-border"}`}
+                          >
+                            {ticked && <CheckSquare className="h-3.5 w-3.5" />}
+                          </button>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium truncate">{it.name}</p>
+                            <p className="text-[11px] text-muted-foreground">
+                              <span className="font-mono">{it.sku}</span> · Strong Room has {fmtQty(it.onHand)} {it.unit}
+                              {it.altUnit && it.altOnHand != null ? ` (≈ ${fmtQty(it.altOnHand)} ${it.altUnit})` : ""}
+                            </p>
+                          </div>
+                          {ticked && (
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="number"
+                                inputMode="decimal"
+                                step="any"
+                                value={picked[it.sku]}
+                                onChange={(e) => setQty(it.sku, e.target.value)}
+                                placeholder="Qty"
+                                className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm tabular-nums outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                                autoFocus
+                              />
+                              <span className="w-10 text-xs text-muted-foreground">{it.unit}</span>
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </Modal>
   );
 }
@@ -414,6 +590,74 @@ function ReceiveModal({
             </div>
           );
         })}
+      </div>
+    </Modal>
+  );
+}
+
+// ── Strong Room issue receipt ────────────────────────────────────────────────
+
+function ReceiptModal({ transfer, onClose }: { transfer: Transfer; onClose: () => void }) {
+  const store = useStore();
+  const lines = transfer.lines.map((l) => {
+    const cost = store.inventory.find((i) => i.sku === l.sku)?.cost ?? 0;
+    const qty = l.qtyIssued ?? l.qtyRequested;
+    return { sku: l.sku, name: l.name, unit: l.unit, qty, cost, total: qty * cost };
+  });
+  const total = lines.reduce((s, l) => s + l.total, 0);
+  const issuedDate = transfer.issuedAt ? new Date(transfer.issuedAt).toLocaleString() : "—";
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Receipt — ${transfer.id}`}
+      description="Strong Room inter-branch issue receipt"
+      footer={<><ModalButton variant="ghost" onClick={onClose}>Close</ModalButton><ModalButton onClick={() => window.print()}>Print receipt</ModalButton></>}
+    >
+      <div className="space-y-3 text-sm">
+        <div className="text-center border-b border-border pb-3">
+          <p className="text-base font-bold">NativeID · Strong Room</p>
+          <p className="text-xs text-muted-foreground">Inter-branch stock issue receipt</p>
+        </div>
+        <div className="flex justify-between text-xs">
+          <span className="text-muted-foreground">Waybill</span>
+          <span className="font-mono">{transfer.id}</span>
+        </div>
+        <div className="flex justify-between text-xs">
+          <span className="text-muted-foreground">Issued to</span>
+          <span className="font-medium">{store.branchName(transfer.toBranch)}</span>
+        </div>
+        <div className="flex justify-between text-xs">
+          <span className="text-muted-foreground">Date</span>
+          <span>{issuedDate}</span>
+        </div>
+        <table className="w-full border-t border-border">
+          <thead>
+            <tr className="text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+              <th className="py-2 font-medium">Item</th>
+              <th className="py-2 font-medium text-right">Qty</th>
+              <th className="py-2 font-medium text-right">Unit ₦</th>
+              <th className="py-2 font-medium text-right">Total ₦</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l) => (
+              <tr key={l.sku} className="border-t border-border">
+                <td className="py-1.5">{l.name}</td>
+                <td className="py-1.5 text-right tabular-nums">{fmtQty(l.qty)} {l.unit}</td>
+                <td className="py-1.5 text-right tabular-nums">{l.cost.toLocaleString()}</td>
+                <td className="py-1.5 text-right tabular-nums">{l.total.toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div className="flex justify-between border-t-2 border-border pt-2 text-base font-bold">
+          <span>Total at cost</span><span className="tabular-nums">₦{total.toLocaleString()}</span>
+        </div>
+        <p className="pt-1 text-center text-[11px] text-muted-foreground">
+          Issued by {transfer.issuedBy ?? "—"} · billed to {store.branchName(transfer.toBranch)} at cost price.
+        </p>
       </div>
     </Modal>
   );

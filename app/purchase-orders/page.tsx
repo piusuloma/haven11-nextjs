@@ -9,9 +9,11 @@ import { useStore, fmtQty, HUB_ID, type PurchaseOrder, type POStatus } from "@/l
 import { Plus, Trash2, PackageCheck, TrendingUp, Eye, EyeOff } from "lucide-react";
 
 const statusClass: Record<POStatus, string> = {
-  Ordered: "bg-warning/15 text-foreground",
-  "Partially Received": "bg-sky-100 text-sky-700",
+  "Pending Approval": "bg-warning/15 text-foreground",
+  Ordered: "bg-sky-100 text-sky-700",
+  "Partially Received": "bg-violet-100 text-violet-700",
   Received: "bg-surface text-primary",
+  Rejected: "bg-muted text-muted-foreground",
 };
 
 function daysSince(ts: number): number {
@@ -21,18 +23,21 @@ function daysSince(ts: number): number {
 export default function PurchaseOrders() {
   const store = useStore();
   const { user } = useAuth();
-  const isFinance = user?.role === "owner" || user?.role === "manager";
+  const me = user?.name ?? "You";
+  const isFinance = user?.role === "owner" || user?.role === "manager" || user?.role === "accountant";
+  // Branch purchase orders are approved by management.
+  const canApprove = user?.role === "owner" || user?.role === "manager";
   const [creating, setCreating] = useState(false);
   const [receiving, setReceiving] = useState<PurchaseOrder | null>(null);
 
   const vendorName = (id: string) => store.vendors.find((v) => v.id === id)?.name ?? "Vendor";
 
-  const open = store.purchaseOrders.filter((p) => p.status !== "Received").length;
-  const payables = store.purchaseOrders.filter((p) => !p.paid && p.status !== "Ordered");
+  const open = store.purchaseOrders.filter((p) => p.status !== "Received" && p.status !== "Rejected").length;
+  const payables = store.purchaseOrders.filter((p) => !p.paid && (p.status === "Partially Received" || p.status === "Received"));
   const apTotal = payables.reduce((s, p) => s + p.total, 0);
 
   return (
-    <AppShell title="Purchase Orders" subtitle="Procurement to the Strong Room · receiving & accounts payable">
+    <AppShell title="Procurement" subtitle="Order inventory into the Strong Room · receiving & accounts payable">
       <section className={`grid grid-cols-2 gap-4 ${isFinance ? "lg:grid-cols-4" : "lg:grid-cols-2"}`}>
         {[
           { l: "Open POs", v: String(open) },
@@ -98,12 +103,20 @@ export default function PurchaseOrders() {
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold">Total ₦{po.total.toLocaleString()}</p>
                 <div className="flex gap-1.5">
-                  {po.status !== "Received" && (
+                  {po.status === "Pending Approval" && (canApprove ? (
+                    <>
+                      <button onClick={() => { store.rejectPO(po.id, me); toast.error(`${po.id} rejected`); }} className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">Reject</button>
+                      <button onClick={() => { store.approvePO(po.id, me); toast.success(`${po.id} approved — sent to vendor`); }} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">Approve</button>
+                    </>
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Awaiting management approval</span>
+                  ))}
+                  {(po.status === "Ordered" || po.status === "Partially Received") && (
                     <button onClick={() => setReceiving(po)} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
                       <PackageCheck className="h-3.5 w-3.5" />Receive goods
                     </button>
                   )}
-                  {po.status !== "Ordered" && !po.paid && (
+                  {(po.status === "Partially Received" || po.status === "Received") && !po.paid && (
                     <button onClick={() => { store.markPOPaid(po.id); toast.success(`${po.id} marked paid`); }} className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">
                       Mark paid
                     </button>
@@ -186,6 +199,12 @@ export default function PurchaseOrders() {
 function NewPOModal({ onClose }: { onClose: () => void }) {
   const store = useStore();
   const [vendorId, setVendorId] = useState(store.vendors[0]?.id ?? "");
+  // Destination is always the branch you're currently viewing — branches cannot
+  // raise POs that deliver to other branches. To order for another branch, the
+  // user switches branches via the header switcher first.
+  const branch = store.currentBranch;
+  const branchName = store.branchName(branch);
+  const isHub = branch === HUB_ID;
   const [expectedDate, setExpectedDate] = useState("");
   const [rows, setRows] = useState<{ sku: string; qty: string; cost: string }[]>([
     { sku: store.products[0]?.sku ?? "", qty: "", cost: "" },
@@ -212,8 +231,8 @@ function NewPOModal({ onClose }: { onClose: () => void }) {
       .filter((r) => r.sku && Number(r.qty) > 0)
       .map((r) => ({ sku: r.sku, qtyOrdered: Number(r.qty), unitCost: Number(r.cost) || 0 }));
     if (lines.length === 0) { toast.error("Add at least one line item"); return; }
-    const po = store.createPO({ vendorId, branch: HUB_ID, expectedDate: expectedDate || "TBC", lines });
-    toast.success(`${po.id} raised`);
+    const po = store.createPO({ vendorId, branch, expectedDate: expectedDate || "TBC", lines });
+    toast.success(`${po.id} raised — awaiting management approval`);
     onClose();
   }
 
@@ -222,18 +241,28 @@ function NewPOModal({ onClose }: { onClose: () => void }) {
       open
       onClose={onClose}
       title="New purchase order"
-      description="Goods are delivered to the Strong Room"
+      description="Routed for management approval before it goes to the vendor"
       size="lg"
       footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={submit}>Raise PO</ModalButton></>}
     >
       <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <label className="block">
             <span className="text-xs font-medium text-muted-foreground">Vendor</span>
             <select value={vendorId} onChange={(e) => setVendorId(e.target.value)} className={inputCls}>
               {store.vendors.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
             </select>
           </label>
+          <div className="block">
+            <span className="text-xs font-medium text-muted-foreground">Deliver to</span>
+            <div className={`${inputCls} flex items-center justify-between bg-surface/60 text-foreground`}>
+              <span className="font-medium">{branchName}</span>
+              <span className="text-[11px] text-muted-foreground">{isHub ? "Strong Room" : "branch"}</span>
+            </div>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              POs deliver to the branch you&apos;re viewing. Switch branches to order for another.
+            </p>
+          </div>
           <label className="block">
             <span className="text-xs font-medium text-muted-foreground">Expected delivery</span>
             <input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} className={inputCls} />

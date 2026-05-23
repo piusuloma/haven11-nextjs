@@ -20,7 +20,9 @@ export default function ManagerDashboard() {
   const branch = store.currentBranch;
 
   const orders = store.orders.filter((o) => o.branch === branch && !o.voided);
-  const salesToday = orders.reduce((s, o) => s + o.total, 0);
+  // Held orders are not yet revenue — only paid (Closed) orders count as sales.
+  const paidOrders = orders.filter((o) => o.status === "Closed");
+  const salesToday = paidOrders.reduce((s, o) => s + o.total, 0);
   const openTickets = store.tickets.filter((t) => t.branch === branch).length;
   const lowStock = store.inventory.filter((i) => i.branch === branch && statusOf(i) !== "OK");
   const overPours = store.counts.filter((c) => c.overPour && c.branch === branch);
@@ -33,7 +35,7 @@ export default function ManagerDashboard() {
     <AppShell title="Dashboard" subtitle={`${store.branchName(branch)} · branch operations`}>
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { l: "Sales today", v: `₦${salesToday.toLocaleString()}`, hint: `${orders.length} orders` },
+          { l: "Sales today", v: `₦${salesToday.toLocaleString()}`, hint: `${paidOrders.length} paid orders` },
           { l: "Open tickets", v: String(openTickets), hint: "kitchen + bar" },
           { l: "Pending approvals", v: String(approvals), hint: "transfers + expenses", tone: approvals > 0 ? "text-warning" : undefined },
           { l: "Stock alerts", v: String(lowStock.length), hint: "low / out", tone: lowStock.length > 0 ? "text-warning" : undefined },
@@ -131,7 +133,9 @@ export default function ManagerDashboard() {
               <li key={o.id} className="flex items-center gap-4 px-5 py-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium tabular-nums">
-                    #{o.id} <span className="text-muted-foreground font-normal">· {o.channel === "Dine-in" ? o.table : `${o.channel} · ${o.customer?.name ?? ""}`}</span>
+                    #{o.id}
+                    {o.status === "On hold" && <span className="mx-1 rounded-full bg-warning/15 px-1.5 py-0.5 text-[10px] font-semibold text-foreground">Held</span>}
+                    <span className="text-muted-foreground font-normal">· {o.channel === "Dine-in" ? o.table : `${o.channel} · ${o.customer?.name ?? ""}`}</span>
                   </p>
                   <p className="text-xs text-muted-foreground">{o.lines.reduce((s, l) => s + l.qty, 0)} items · {o.staffName} · {timeAgo(o.at)}</p>
                 </div>

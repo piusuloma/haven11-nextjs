@@ -6,13 +6,20 @@ import { AppShell } from "@/components/AppShell";
 import { Modal, ModalButton } from "@/components/Modal";
 import { WasteModal } from "@/components/WasteModal";
 import { ImportModal } from "@/components/ImportModal";
+import { StockRequestModal } from "@/components/StockRequestModal";
 import { exportCsv } from "@/lib/export";
 import { field } from "@/lib/csv";
 import { useAuth } from "@/lib/auth";
-import { useStore, statusOf, fmtQty, daysUntil, type InventoryItem, type Line } from "@/lib/store";
-import { Search, Filter, Download, Upload, AlertTriangle, Plus, PackagePlus, ClipboardCheck, Trash2, ShieldAlert, CalendarClock } from "lucide-react";
+import {
+  useStore, statusOf, fmtQty, daysUntil, LOCATION_NAME, HUB_ID,
+  asCategory,
+  type InventoryItem, type InventoryCategory, type Line, type StockLocation,
+} from "@/lib/store";
+import { CategoryManagerModal } from "@/components/CategoryManagerModal";
+import { Search, Filter, Download, Upload, AlertTriangle, Plus, PackagePlus, ClipboardCheck, Trash2, ShieldAlert, CalendarClock, ArrowLeftRight, PackageCheck } from "lucide-react";
 
-const LINES: Line[] = ["Bar", "Kitchen", "Lounge"];
+const LINES: Line[] = ["Kitchen", "Bar", "Juice Bar", "Lounge"];
+const LOCATIONS: StockLocation[] = ["store", "kitchen", "bar", "juice-bar"];
 
 const statusClass = {
   OK: "bg-surface text-primary",
@@ -30,49 +37,74 @@ function timeAgo(ts: number): string {
 
 export default function Inventory() {
   const store = useStore();
+  const { user } = useAuth();
+  const [loc, setLoc] = useState<StockLocation>("store");
   const [query, setQuery] = useState("");
   const [lineFilter, setLineFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
+  const [categoryFilter, setCategoryFilter] = useState("All");
   const [filterOpen, setFilterOpen] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [wasteOpen, setWasteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [requestOpen, setRequestOpen] = useState(false);
   const [adjusting, setAdjusting] = useState<InventoryItem | null>(null);
   const [showActivity, setShowActivity] = useState(false);
+  const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
+  const canManageCategories = user?.role === "owner" || user?.role === "manager";
 
-  // Inventory is per-branch — show the branch you're operating as.
+  const isHub = store.currentBranch === HUB_ID;
+  const locTabs: StockLocation[] = isHub ? ["store"] : LOCATIONS;
+  const activeLoc: StockLocation = locTabs.includes(loc) ? loc : "store";
+
+  // Inventory is per-branch and per-location.
   const branchInv = useMemo(
-    () => store.inventory.filter((i) => i.branch === store.currentBranch),
-    [store.inventory, store.currentBranch],
+    () => store.inventory.filter((i) => i.branch === store.currentBranch && i.location === activeLoc),
+    [store.inventory, store.currentBranch, activeLoc],
   );
-  const branchCounts = store.counts.filter((c) => c.branch === store.currentBranch);
-  const branchWaste = store.waste.filter((w) => w.branch === store.currentBranch);
+  const branchCounts = store.counts.filter((c) => c.branch === store.currentBranch && c.location === activeLoc);
+  const branchWaste = store.waste.filter((w) => w.branch === store.currentBranch && w.location === activeLoc);
   const branchBatches = store.batches
     .filter((b) => b.branch === store.currentBranch)
     .slice()
     .sort((a, b) => daysUntil(a.expiry) - daysUntil(b.expiry));
+  const branchRequests = store.stockRequests.filter((r) => r.branch === store.currentBranch);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return branchInv.filter((s) => {
-      const matchesQuery = !q || s.name.toLowerCase().includes(q) || s.sku.toLowerCase().includes(q);
+      // Free-text search matches name, SKU, *or* category — typing "spice"
+      // surfaces Suya Spice; typing "protein" surfaces all proteins.
+      const matchesQuery = !q
+        || s.name.toLowerCase().includes(q)
+        || s.sku.toLowerCase().includes(q)
+        || s.category.toLowerCase().includes(q);
       const matchesLine = lineFilter === "All" || s.line === lineFilter;
       const matchesStatus = statusFilter === "All" || statusOf(s) === statusFilter;
-      return matchesQuery && matchesLine && matchesStatus;
+      const matchesCategory = categoryFilter === "All" || s.category === categoryFilter;
+      return matchesQuery && matchesLine && matchesStatus && matchesCategory;
     });
-  }, [branchInv, query, lineFilter, statusFilter]);
+  }, [branchInv, query, lineFilter, statusFilter, categoryFilter]);
 
   const lowCount = branchInv.filter((s) => statusOf(s) === "Low").length;
   const outCount = branchInv.filter((s) => statusOf(s) === "Out").length;
   const stockValue = branchInv.reduce((sum, s) => sum + s.onHand * s.cost, 0);
-  const activeFilters = (lineFilter !== "All" ? 1 : 0) + (statusFilter !== "All" ? 1 : 0);
+  const activeFilters =
+    (lineFilter !== "All" ? 1 : 0)
+    + (statusFilter !== "All" ? 1 : 0)
+    + (categoryFilter !== "All" ? 1 : 0);
+  // Only show categories that actually appear in this location, plus "All".
+  const presentCategories = useMemo(() => {
+    const set = new Set<string>(branchInv.map((i) => i.category));
+    return ["All", ...store.inventoryCategories.filter((c) => set.has(c))];
+  }, [branchInv, store.inventoryCategories]);
 
   function handleExport() {
     exportCsv(
-      `inventory-${new Date().toISOString().slice(0, 10)}.csv`,
+      `inventory-${activeLoc}-${new Date().toISOString().slice(0, 10)}.csv`,
       filtered.map((s) => ({
-        SKU: s.sku, Item: s.name, Line: s.line, "On hand": fmtQty(s.onHand),
-        Unit: s.unit, Reorder: s.reorder, "Unit cost": s.cost,
+        SKU: s.sku, Item: s.name, Category: s.category, Location: LOCATION_NAME[s.location], Line: s.line,
+        "On hand": fmtQty(s.onHand), Unit: s.unit, Reorder: s.reorder, "Unit cost": s.cost,
         "Stock value": Math.round(s.onHand * s.cost), Status: statusOf(s),
       })),
     );
@@ -80,7 +112,22 @@ export default function Inventory() {
   }
 
   return (
-    <AppShell title="Inventory" subtitle={`${store.branchName(store.currentBranch)} · stock auto-deducts as the POS sells`}>
+    <AppShell title="Inventory" subtitle={`${store.branchName(store.currentBranch)} · ${LOCATION_NAME[activeLoc]}`}>
+      {/* Location tabs — Main Store + Kitchen / Bar / Juice Bar sub-stores */}
+      {locTabs.length > 1 && (
+        <div className="flex gap-2 overflow-x-auto pb-0.5">
+          {locTabs.map((l) => (
+            <button
+              key={l}
+              onClick={() => { setLoc(l); setStatusFilter("All"); }}
+              className={`shrink-0 rounded-xl px-4 py-2 text-sm font-semibold transition-colors ${activeLoc === l ? "bg-primary text-primary-foreground" : "bg-card border border-border text-foreground/70 hover:bg-surface"}`}
+            >
+              {LOCATION_NAME[l]}
+            </button>
+          ))}
+        </div>
+      )}
+
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { l: "Total SKUs", v: String(branchInv.length) },
@@ -119,12 +166,21 @@ export default function Inventory() {
               {filterOpen && (
                 <>
                   <div className="fixed inset-0 z-10" onClick={() => setFilterOpen(false)} />
-                  <div className="absolute right-0 mt-2 w-56 rounded-xl border border-border bg-card shadow-xl z-20 p-3 space-y-3">
+                  <div className="absolute right-0 mt-2 w-72 rounded-xl border border-border bg-card shadow-xl z-20 p-3 space-y-3">
+                    <FilterGroup label="Category" value={categoryFilter} options={presentCategories} onChange={setCategoryFilter} />
                     <FilterGroup label="Line" value={lineFilter} options={["All", ...LINES]} onChange={setLineFilter} />
                     <FilterGroup label="Status" value={statusFilter} options={["All", "OK", "Low", "Out"]} onChange={setStatusFilter} />
                     {activeFilters > 0 && (
-                      <button onClick={() => { setLineFilter("All"); setStatusFilter("All"); }} className="w-full rounded-md border border-border py-1.5 text-xs font-medium hover:bg-surface">
+                      <button onClick={() => { setLineFilter("All"); setStatusFilter("All"); setCategoryFilter("All"); }} className="w-full rounded-md border border-border py-1.5 text-xs font-medium hover:bg-surface">
                         Clear filters
+                      </button>
+                    )}
+                    {canManageCategories && (
+                      <button
+                        onClick={() => { setManageCategoriesOpen(true); setFilterOpen(false); }}
+                        className="block w-full pt-1 text-left text-[11px] font-medium text-primary hover:underline"
+                      >
+                        Manage categories →
                       </button>
                     )}
                   </div>
@@ -140,9 +196,15 @@ export default function Inventory() {
             <button onClick={() => setImportOpen(true)} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-surface">
               <Upload className="h-3.5 w-3.5" />Import
             </button>
-            <button onClick={() => setNewOpen(true)} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
-              <Plus className="h-3.5 w-3.5" />New SKU
-            </button>
+            {activeLoc === "store" ? (
+              <button onClick={() => setNewOpen(true)} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
+                <Plus className="h-3.5 w-3.5" />New product
+              </button>
+            ) : (
+              <span className="text-[11px] italic text-muted-foreground">
+                Stocked from the Main Store · products are defined there
+              </span>
+            )}
           </div>
         </div>
         <div className="overflow-x-auto">
@@ -160,15 +222,30 @@ export default function Inventory() {
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={7} className="px-5 py-10 text-center text-muted-foreground">No items match your search</td></tr>
+                <tr><td colSpan={7} className="px-5 py-10 text-center text-muted-foreground">No items in {LOCATION_NAME[activeLoc]} match your search</td></tr>
               ) : filtered.map((r) => {
                 const status = statusOf(r);
                 return (
-                  <tr key={r.sku} className="border-b border-border last:border-0 hover:bg-surface/50">
+                  <tr key={`${r.location}:${r.sku}`} className="border-b border-border last:border-0 hover:bg-surface/50">
                     <td className="px-5 py-3 font-mono text-xs text-muted-foreground">{r.sku}</td>
-                    <td className="px-5 py-3 font-medium">{r.name}</td>
+                    <td className="px-5 py-3">
+                      <span className="font-medium">{r.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setCategoryFilter(r.category)}
+                        className="ml-2 inline-flex items-center rounded-full bg-surface px-2 py-0.5 text-[10px] font-medium text-foreground/70 hover:bg-primary/10 hover:text-primary"
+                        title={`Filter by ${r.category}`}
+                      >
+                        {r.category}
+                      </button>
+                    </td>
                     <td className="px-5 py-3 text-muted-foreground">{r.line}</td>
-                    <td className="px-5 py-3 text-right tabular-nums">{fmtQty(r.onHand)} {r.unit}</td>
+                    <td className="px-5 py-3 text-right tabular-nums">
+                      <span>{fmtQty(r.onHand)} {r.unit}</span>
+                      {r.altUnit && r.altOnHand != null && (
+                        <span className="block text-[11px] font-normal text-muted-foreground">≈ {fmtQty(r.altOnHand)} {r.altUnit}</span>
+                      )}
+                    </td>
                     <td className="px-5 py-3 text-right tabular-nums text-muted-foreground">{fmtQty(r.reorder)} {r.unit}</td>
                     <td className="px-5 py-3">
                       <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${statusClass[status]}`}>
@@ -185,6 +262,53 @@ export default function Inventory() {
           </table>
         </div>
       </div>
+
+      {/* Internal stock requests — Main Store issues stock into Kitchen / Bar / Juice Bar */}
+      {!isHub && (
+        <section className="rounded-xl border border-border bg-card p-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold flex items-center gap-2">
+              <ArrowLeftRight className="h-4 w-4 text-muted-foreground" />Internal stock requests
+            </h2>
+            {activeLoc !== "store" && (
+              <button onClick={() => setRequestOpen(true)} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
+                <PackagePlus className="h-3.5 w-3.5" />Request {LOCATION_NAME[activeLoc]} stock
+              </button>
+            )}
+          </div>
+          {branchRequests.length === 0 ? (
+            <p className="mt-4 text-sm text-muted-foreground">
+              No internal requests yet. The Kitchen, Bar &amp; Juice Bar request stock from the Main Store here.
+            </p>
+          ) : (
+            <ul className="mt-4 space-y-2">
+              {branchRequests.slice(0, 8).map((r) => (
+                <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border p-3 text-sm">
+                  <div>
+                    <p className="font-medium">
+                      <span className="font-mono text-xs text-muted-foreground">{r.id}</span> · Main Store → {LOCATION_NAME[r.toLocation]}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {r.lines.length} item{r.lines.length !== 1 ? "s" : ""} · {r.requestedBy} · {timeAgo(r.requestedAt)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${r.status === "Requested" ? "bg-warning/15 text-foreground" : "bg-surface text-primary"}`}>{r.status}</span>
+                    {r.status === "Requested" && (
+                      <button
+                        onClick={() => { store.issueStockRequest(r.id, user?.name ?? "Unknown"); toast.success(`${r.id} issued to ${LOCATION_NAME[r.toLocation]}`); }}
+                        className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+                      >
+                        <PackageCheck className="h-3.5 w-3.5" />Issue from Main Store
+                      </button>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
 
       {/* Variance & waste log — the audit trail of losses, attributed to staff */}
       <div className="flex justify-end">
@@ -203,7 +327,7 @@ export default function Inventory() {
             <ShieldAlert className="h-4 w-4 text-muted-foreground" />Stock-count variance
           </h2>
           {branchCounts.length === 0 ? (
-            <p className="mt-4 text-sm text-muted-foreground">No counts yet. Use <span className="font-medium text-foreground">Adjust → Stock count</span>, or a bartender&apos;s shift close.</p>
+            <p className="mt-4 text-sm text-muted-foreground">No counts yet for {LOCATION_NAME[activeLoc]}. Use <span className="font-medium text-foreground">Adjust → Stock count</span>.</p>
           ) : (
             <ul className="mt-4 space-y-2">
               {branchCounts.slice(0, 6).map((c) => (
@@ -211,7 +335,7 @@ export default function Inventory() {
                   <div className="flex items-center justify-between">
                     <span className="font-medium">{c.name}</span>
                     <span className={`tabular-nums font-bold ${c.variance < 0 ? "text-destructive" : c.variance > 0 ? "text-foreground" : "text-primary"}`}>
-                      {c.variance > 0 ? "+" : ""}{fmtQty(c.variance)} {store.inventory.find((i) => i.sku === c.sku)?.unit}
+                      {c.variance > 0 ? "+" : ""}{fmtQty(c.variance)}
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
@@ -230,16 +354,24 @@ export default function Inventory() {
             <Trash2 className="h-4 w-4 text-muted-foreground" />Waste log
           </h2>
           {branchWaste.length === 0 ? (
-            <p className="mt-4 text-sm text-muted-foreground">No waste recorded yet. Use the <span className="font-medium text-foreground">Waste</span> button above.</p>
+            <p className="mt-4 text-sm text-muted-foreground">No waste recorded for {LOCATION_NAME[activeLoc]} yet.</p>
           ) : (
             <ul className="mt-4 space-y-2">
               {branchWaste.slice(0, 6).map((w) => (
-                <li key={w.id} className="rounded-lg border border-border p-3 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">{fmtQty(w.qty)} {w.unit} {w.name}</span>
-                    <span className="tabular-nums font-bold text-destructive">₦{w.cost.toLocaleString()}</span>
+                <li key={w.id} className="flex items-start gap-3 rounded-lg border border-border p-3 text-sm">
+                  {w.photoDataUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={w.photoDataUrl} alt={w.photoName ?? "Waste photo"} className="h-12 w-12 shrink-0 rounded-md object-cover" />
+                  ) : w.photoName ? (
+                    <span className="grid h-12 w-12 shrink-0 place-items-center rounded-md bg-surface text-muted-foreground text-lg" title={w.photoName}>📎</span>
+                  ) : null}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium truncate">{fmtQty(w.qty)} {w.unit} {w.name}</span>
+                      <span className="tabular-nums font-bold text-destructive shrink-0">₦{w.cost.toLocaleString()}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-0.5">{w.reason} · {w.staffName} · {timeAgo(w.at)}</p>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-0.5">{w.reason} · {w.staffName} · {timeAgo(w.at)}</p>
                 </li>
               ))}
             </ul>
@@ -283,28 +415,33 @@ export default function Inventory() {
         )}
       </section>
 
-      <NewSkuModal open={newOpen} onClose={() => setNewOpen(false)} />
-      <WasteModal open={wasteOpen} onClose={() => setWasteOpen(false)} />
+      <NewSkuModal open={newOpen} onClose={() => setNewOpen(false)} location={activeLoc} />
+      <WasteModal open={wasteOpen} onClose={() => setWasteOpen(false)} location={activeLoc} />
+      {requestOpen && activeLoc !== "store" && (
+        <StockRequestModal toLocation={activeLoc} onClose={() => setRequestOpen(false)} />
+      )}
       <ImportModal
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        title="Bulk import inventory"
+        title={`Bulk import — ${LOCATION_NAME[activeLoc]}`}
         description="Upload or paste a CSV — existing SKUs are updated, new ones added"
         templateName="inventory-template.csv"
-        sample={{ SKU: "BAR-099", Item: "Tonic Water", Line: "Bar", "On hand": 24, Unit: "btl", Reorder: 12, "Unit cost": 650 }}
+        sample={{ SKU: "BAR-099", Item: "Tonic Water", Category: "Mixers", Line: "Bar", "On hand": 24, Unit: "btl", Reorder: 12, "Unit cost": 650 }}
         onImport={(rows) => {
           const items: InventoryItem[] = [];
           rows.forEach((r, idx) => {
             const name = field(r, "Item", "Name");
             if (!name) return;
             const lineRaw = field(r, "Line");
-            const line: Line = lineRaw === "Bar" || lineRaw === "Lounge" ? lineRaw : "Kitchen";
-            const prefix = line === "Bar" ? "BAR" : line === "Lounge" ? "LNG" : "KIT";
+            const line: Line = lineRaw === "Bar" || lineRaw === "Lounge" || lineRaw === "Juice Bar" ? lineRaw : "Kitchen";
+            const prefix = line === "Bar" ? "BAR" : line === "Lounge" ? "LNG" : line === "Juice Bar" ? "JUC" : "KIT";
             items.push({
               sku: field(r, "SKU") || `${prefix}-${String(store.inventory.length + idx + 1).padStart(3, "0")}`,
               branch: store.currentBranch,
+              location: activeLoc,
               name,
               line,
+              category: asCategory(field(r, "Category"), store.inventoryCategories),
               onHand: Number(field(r, "On hand", "OnHand", "Quantity")) || 0,
               reorder: Number(field(r, "Reorder", "Reorder level")) || 0,
               unit: field(r, "Unit") || "pcs",
@@ -317,6 +454,7 @@ export default function Inventory() {
         }}
       />
       {adjusting && <AdjustModal item={adjusting} onClose={() => setAdjusting(null)} />}
+      {manageCategoriesOpen && <CategoryManagerModal onClose={() => setManageCategoriesOpen(false)} />}
     </AppShell>
   );
 }
@@ -342,28 +480,47 @@ function FilterGroup({ label, value, options, onChange }: { label: string; value
 
 // ── New SKU ──────────────────────────────────────────────────────────────────
 
-function NewSkuModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+function NewSkuModal({ open, onClose, location }: { open: boolean; onClose: () => void; location: StockLocation }) {
   const store = useStore();
+  const { user } = useAuth();
+  const canManageCategories = user?.role === "owner" || user?.role === "manager";
   const [name, setName] = useState("");
   const [line, setLine] = useState<Line>("Kitchen");
+  const [category, setCategory] = useState<InventoryCategory>(store.inventoryCategories[0] ?? "Other");
   const [onHand, setOnHand] = useState("");
   const [reorder, setReorder] = useState("");
   const [unit, setUnit] = useState("pcs");
+  const [altUnit, setAltUnit] = useState("");
   const [cost, setCost] = useState("");
+  const [manageOpen, setManageOpen] = useState(false);
+
+  // No-duplicates safeguard: a product is identified by name across the whole
+  // catalogue (every branch + sub-store reuses the same definition).
+  const trimmed = name.trim();
+  const duplicate = trimmed
+    ? store.inventory.find((i) => i.name.toLowerCase() === trimmed.toLowerCase())
+    : undefined;
 
   function submit() {
-    if (!name.trim()) { toast.error("Enter an item name"); return; }
-    const prefix = line === "Bar" ? "BAR" : line === "Lounge" ? "LNG" : "KIT";
+    if (!trimmed) { toast.error("Enter an item name"); return; }
+    if (duplicate) {
+      toast.error(`"${duplicate.name}" already exists — adjust its stock instead of creating a new product`);
+      return;
+    }
+    const prefix = line === "Bar" ? "BAR" : line === "Lounge" ? "LNG" : line === "Juice Bar" ? "JUC" : "KIT";
     const item: InventoryItem = {
       sku: `${prefix}-${String(store.inventory.length + 1).padStart(3, "0")}`,
       branch: store.currentBranch,
-      name: name.trim(), line,
+      location,
+      name: trimmed, line, category,
       onHand: Number(onHand) || 0, reorder: Number(reorder) || 0,
       unit, cost: Number(cost) || 0,
+      ...(altUnit ? { altUnit, altOnHand: 0 } : {}),
     };
     store.addInventoryItem(item);
-    toast.success(`${item.name} added to ${store.branchName(store.currentBranch)} inventory`);
-    setName(""); setOnHand(""); setReorder(""); setCost(""); setUnit("pcs"); setLine("Kitchen");
+    toast.success(`${item.name} added to ${store.branchName(store.currentBranch)} · ${LOCATION_NAME[location]}`);
+    setName(""); setOnHand(""); setReorder(""); setCost(""); setUnit("pcs"); setAltUnit(""); setLine("Kitchen");
+    setCategory(store.inventoryCategories[0] ?? "Other");
     onClose();
   }
 
@@ -371,30 +528,75 @@ function NewSkuModal({ open, onClose }: { open: boolean; onClose: () => void }) 
     <Modal
       open={open}
       onClose={onClose}
-      title="New inventory item"
-      description="Create a stock-keeping unit"
-      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={submit}>Add item</ModalButton></>}
+      title="New product"
+      description="Defined once in the Main Store catalogue — Kitchen, Bar & Juice Bar reuse the same record"
+      footer={
+        <>
+          <ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton>
+          <ModalButton onClick={submit} disabled={!!duplicate || !trimmed}>Add product</ModalButton>
+        </>
+      }
     >
       <div className="space-y-4">
         <Field label="Item name"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Tomato Paste 400g" className={inputCls} /></Field>
+        {duplicate && (
+          <div className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 p-3 text-xs">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-warning mt-0.5" />
+            <div>
+              <p className="font-semibold text-foreground">&quot;{duplicate.name}&quot; is already in the catalogue</p>
+              <p className="mt-0.5 text-muted-foreground">
+                Tracked as <span className="font-mono">{duplicate.sku}</span> in {LOCATION_NAME[duplicate.location]} ·
+                use <span className="font-medium text-foreground">Adjust → Receive stock</span> to add more, or request it into a sub-store.
+              </p>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="flex items-center justify-between text-xs font-medium text-muted-foreground">
+              <span>Category</span>
+              {canManageCategories && (
+                <button
+                  type="button"
+                  onClick={() => setManageOpen(true)}
+                  className="text-[11px] font-medium text-primary hover:underline"
+                >
+                  Manage…
+                </button>
+              )}
+            </span>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value as InventoryCategory)}
+              className={`${inputCls} mt-1`}
+            >
+              {store.inventoryCategories.map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </label>
           <Field label="Line">
             <select value={line} onChange={(e) => setLine(e.target.value as Line)} className={inputCls}>
               {LINES.map((l) => <option key={l}>{l}</option>)}
             </select>
           </Field>
-          <Field label="Unit">
-            <select value={unit} onChange={(e) => setUnit(e.target.value)} className={inputCls}>
-              {["pcs", "kg", "L", "btl", "bunch", "cans", "bag"].map((u) => <option key={u}>{u}</option>)}
-            </select>
-          </Field>
         </div>
+        <Field label="Primary unit (used in recipes)">
+          <select value={unit} onChange={(e) => setUnit(e.target.value)} className={inputCls}>
+            {["pcs", "kg", "L", "btl", "bunch", "cans", "bag"].map((u) => <option key={u}>{u}</option>)}
+          </select>
+        </Field>
+        <Field label="Also count in (optional — e.g. yam in kg + pcs)">
+          <select value={altUnit} onChange={(e) => setAltUnit(e.target.value)} className={inputCls}>
+            <option value="">— none —</option>
+            {["pcs", "kg", "L", "btl", "bunch", "cans", "bag"].filter((u) => u !== unit).map((u) => <option key={u}>{u}</option>)}
+          </select>
+        </Field>
         <div className="grid grid-cols-3 gap-3">
           <Field label="On hand"><input type="number" value={onHand} onChange={(e) => setOnHand(e.target.value)} placeholder="0" className={inputCls} /></Field>
           <Field label="Reorder at"><input type="number" value={reorder} onChange={(e) => setReorder(e.target.value)} placeholder="0" className={inputCls} /></Field>
           <Field label="Unit cost ₦"><input type="number" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="0" className={inputCls} /></Field>
         </div>
       </div>
+      {manageOpen && <CategoryManagerModal onClose={() => setManageOpen(false)} />}
     </Modal>
   );
 }
@@ -406,23 +608,27 @@ function AdjustModal({ item, onClose }: { item: InventoryItem; onClose: () => vo
   const { user } = useAuth();
   const [mode, setMode] = useState<"receive" | "count">("receive");
   const [amount, setAmount] = useState("");
+  const [altAmount, setAltAmount] = useState("");
 
   const amt = Number(amount) || 0;
   const projected = mode === "receive" ? item.onHand + amt : amt;
   const variance = +(projected - item.onHand).toFixed(4);
   const barShift = store.barShift();
-  const willAttributeTo = item.line === "Bar" && barShift ? barShift.staffName : user?.name ?? "you";
+  const isBarStore = item.location === "bar";
+  const willAttributeTo = isBarStore && barShift ? barShift.staffName : user?.name ?? "you";
 
   function save() {
     if (mode === "receive") {
       if (amt <= 0) { toast.error("Enter a quantity to receive"); return; }
-      store.receiveStock(item.sku, amt);
-      toast.success(`Received ${fmtQty(amt)} ${item.unit} ${item.name}`);
+      const altAmt = item.altUnit && Number(altAmount) > 0 ? Number(altAmount) : undefined;
+      store.receiveStock(item.sku, item.location, amt, altAmt);
+      const altText = altAmt ? ` (${fmtQty(altAmt)} ${item.altUnit})` : "";
+      toast.success(`Received ${fmtQty(amt)} ${item.unit}${altText} ${item.name}`);
     } else {
-      const by = item.line === "Bar" && barShift
+      const by = isBarStore && barShift
         ? { name: barShift.staffName, shiftId: barShift.id }
         : { name: user?.name ?? "Unknown" };
-      const result = store.recordStockCount(item.sku, amt, by);
+      const result = store.recordStockCount(item.sku, item.location, amt, by);
       if (result.overPour) {
         toast.warning(`Over-pour flagged to ${result.staffName} · ${fmtQty(result.variance)} ${item.unit} (₦${Math.abs(result.varianceCost).toLocaleString()})`);
       } else if (result.variance === 0) {
@@ -439,7 +645,7 @@ function AdjustModal({ item, onClose }: { item: InventoryItem; onClose: () => vo
       open
       onClose={onClose}
       title={item.name}
-      description={`${item.sku} · ${item.line} · ${fmtQty(item.onHand)} ${item.unit} on hand`}
+      description={`${item.sku} · ${LOCATION_NAME[item.location]} · ${fmtQty(item.onHand)} ${item.unit} on hand`}
       footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={save}>Save adjustment</ModalButton></>}
     >
       <div className="space-y-4">
@@ -453,8 +659,14 @@ function AdjustModal({ item, onClose }: { item: InventoryItem; onClose: () => vo
         </div>
 
         <Field label={mode === "receive" ? `Quantity received (${item.unit})` : `Counted quantity (${item.unit})`}>
-          <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" autoFocus className={inputCls} />
+          <input type="number" inputMode="decimal" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" autoFocus className={inputCls} />
         </Field>
+
+        {mode === "receive" && item.altUnit && (
+          <Field label={`Also count in ${item.altUnit} (optional)`}>
+            <input type="number" inputMode="decimal" step="any" value={altAmount} onChange={(e) => setAltAmount(e.target.value)} placeholder={item.altOnHand != null ? `currently ≈ ${fmtQty(item.altOnHand)} ${item.altUnit}` : "0"} className={inputCls} />
+          </Field>
+        )}
 
         <div className="rounded-xl bg-surface/60 border border-border p-4 space-y-2 text-sm">
           <div className="flex justify-between"><span className="text-muted-foreground">Current</span><span className="tabular-nums font-medium">{fmtQty(item.onHand)} {item.unit}</span></div>
@@ -469,8 +681,8 @@ function AdjustModal({ item, onClose }: { item: InventoryItem; onClose: () => vo
         {mode === "count" && (
           <p className="text-xs text-muted-foreground">
             Variance will be attributed to <span className="font-semibold text-foreground">{willAttributeTo}</span>
-            {item.line === "Bar" && barShift && " (bartender on shift)"}.
-            {item.line === "Bar" && variance < 0 && <span className="text-destructive"> A shortfall is flagged as over-pour.</span>}
+            {isBarStore && barShift && " (bartender on shift)"}.
+            {isBarStore && variance < 0 && <span className="text-destructive"> A shortfall is flagged as over-pour.</span>}
           </p>
         )}
       </div>

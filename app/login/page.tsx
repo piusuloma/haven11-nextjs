@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth, STAFF_ROSTER, type StaffUser } from "@/lib/auth";
-import { ChefHat, Wine, CreditCard, LayoutDashboard, Boxes, Crown, Delete } from "lucide-react";
+import { ChefHat, Wine, CreditCard, LayoutDashboard, Boxes, Crown, Delete, Calculator, UserCog } from "lucide-react";
 
 const roleIcon: Record<string, typeof ChefHat> = {
   owner: Crown,
@@ -12,6 +12,8 @@ const roleIcon: Record<string, typeof ChefHat> = {
   kitchen: ChefHat,
   bartender: Wine,
   storekeeper: Boxes,
+  accountant: Calculator,
+  hr: UserCog,
 };
 
 const roleColor: Record<string, { bg: string; text: string; border: string }> = {
@@ -21,6 +23,8 @@ const roleColor: Record<string, { bg: string; text: string; border: string }> = 
   kitchen:     { bg: "bg-orange-50",  text: "text-orange-600",  border: "border-orange-200" },
   bartender:   { bg: "bg-purple-50",  text: "text-purple-600",  border: "border-purple-200" },
   storekeeper: { bg: "bg-sky-50",     text: "text-sky-600",     border: "border-sky-200" },
+  accountant:  { bg: "bg-teal-50",    text: "text-teal-600",    border: "border-teal-200" },
+  hr:          { bg: "bg-indigo-50",  text: "text-indigo-600",  border: "border-indigo-200" },
 };
 
 function PinPad({ staff, onClose }: { staff: StaffUser; onClose: () => void }) {

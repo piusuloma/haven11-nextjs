@@ -7,7 +7,7 @@ import {
   LayoutDashboard, ShoppingCart, Boxes, ChefHat, Wine,
   ClipboardList, Coins, Users, CalendarRange, HeartHandshake,
   BarChart3, ShieldAlert, Bell, LogOut, AlertTriangle, CheckCircle2, Menu, X,
-  ArrowLeftRight, Building2, Warehouse, ChevronDown, Check, Truck, ScrollText, Wallet, Banknote, Bike, History,
+  ArrowLeftRight, Building2, Warehouse, ChevronDown, Check, Truck, ScrollText, Wallet, Banknote, Bike, History, UserCog,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAuth, type StaffRole } from "@/lib/auth";
@@ -21,17 +21,18 @@ type NavItem = {
 
 const allModules: NavItem[] = [
   { href: "/", icon: LayoutDashboard, label: "Overview" },
-  { href: "/pos", icon: ShoppingCart, label: "POS" },
+  { href: "/pos", icon: ShoppingCart, label: "Front of House" },
   { href: "/inventory", icon: Boxes, label: "Inventory" },
   { href: "/transfers", icon: ArrowLeftRight, label: "Stock Transfers" },
-  { href: "/purchase-orders", icon: ScrollText, label: "Purchase Orders" },
+  { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
   { href: "/vendors", icon: Truck, label: "Vendors" },
   { href: "/menu", icon: ChefHat, label: "Menu & Recipes" },
   { href: "/kitchen-bar", icon: Wine, label: "Kitchen & Bar" },
   { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
-  { href: "/cashier", icon: Coins, label: "Cashier & Shifts" },
+  { href: "/cashier", icon: Coins, label: "Front of House on Shift" },
   { href: "/expenses", icon: Wallet, label: "Expenses" },
   { href: "/staff", icon: Users, label: "Staff" },
+  { href: "/hr", icon: UserCog, label: "HR Dashboard" },
   { href: "/payroll", icon: Banknote, label: "Payroll" },
   { href: "/events", icon: CalendarRange, label: "Events" },
   { href: "/customers", icon: HeartHandshake, label: "Customers" },
@@ -44,16 +45,17 @@ const roleNav: Record<StaffRole, NavItem[]> = {
   owner: allModules,
   manager: [
     { href: "/manager-dashboard", icon: LayoutDashboard, label: "Dashboard" },
-    { href: "/pos", icon: ShoppingCart, label: "POS" },
+    { href: "/pos", icon: ShoppingCart, label: "Front of House" },
     { href: "/inventory", icon: Boxes, label: "Inventory" },
     { href: "/transfers", icon: ArrowLeftRight, label: "Stock Transfers" },
-    { href: "/purchase-orders", icon: ScrollText, label: "Purchase Orders" },
+    { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
     { href: "/vendors", icon: Truck, label: "Vendors" },
     { href: "/kitchen-bar", icon: Wine, label: "Kitchen & Bar" },
     { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
-    { href: "/cashier", icon: Coins, label: "Cashier & Shifts" },
+    { href: "/cashier", icon: Coins, label: "Front of House on Shift" },
     { href: "/expenses", icon: Wallet, label: "Expenses" },
     { href: "/staff", icon: Users, label: "Staff" },
+    { href: "/hr", icon: UserCog, label: "HR Dashboard" },
     { href: "/payroll", icon: Banknote, label: "Payroll" },
     { href: "/customers", icon: HeartHandshake, label: "Customers" },
     { href: "/reports", icon: BarChart3, label: "Analytics" },
@@ -61,7 +63,7 @@ const roleNav: Record<StaffRole, NavItem[]> = {
   ],
   cashier: [
     { href: "/cashier-home", icon: LayoutDashboard, label: "My Shift" },
-    { href: "/pos", icon: ShoppingCart, label: "POS" },
+    { href: "/pos", icon: ShoppingCart, label: "Front of House" },
     { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
     { href: "/expenses", icon: Wallet, label: "Expenses" },
   ],
@@ -70,15 +72,27 @@ const roleNav: Record<StaffRole, NavItem[]> = {
   ],
   bartender: [
     { href: "/bar-home", icon: Wine, label: "Bar Queue" },
-    { href: "/pos", icon: ShoppingCart, label: "POS" },
+    { href: "/pos", icon: ShoppingCart, label: "Front of House" },
   ],
   storekeeper: [
     { href: "/store-home", icon: Boxes, label: "Store" },
     { href: "/inventory", icon: Boxes, label: "Inventory" },
     { href: "/transfers", icon: ArrowLeftRight, label: "Stock Transfers" },
-    { href: "/purchase-orders", icon: ScrollText, label: "Purchase Orders" },
+    { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
     { href: "/vendors", icon: Truck, label: "Vendors" },
     { href: "/expenses", icon: Wallet, label: "Expenses" },
+  ],
+  accountant: [
+    { href: "/expenses", icon: Wallet, label: "Expenses" },
+    { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
+    { href: "/vendors", icon: Truck, label: "Vendors" },
+    { href: "/audit", icon: History, label: "Audit Trail" },
+  ],
+  hr: [
+    { href: "/hr", icon: UserCog, label: "HR Dashboard" },
+    { href: "/staff", icon: Users, label: "Staff" },
+    { href: "/payroll", icon: Banknote, label: "Payroll" },
+    { href: "/audit", icon: History, label: "Audit Trail" },
   ],
 };
 
@@ -253,8 +267,8 @@ function BranchSwitcher() {
   if (!store.hydrated) return null;
   const current = store.branches.find((b) => b.id === store.currentBranch);
 
-  // Only the Owner roams branches — everyone else is pinned to their own.
-  if (user?.role !== "owner") {
+  // The Owner, Accountant and HR roam branches — everyone else is pinned to their own.
+  if (user?.role !== "owner" && user?.role !== "accountant" && user?.role !== "hr") {
     return (
       <div className="inline-flex items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 text-sm font-medium">
         {current?.kind === "hub" ? <Warehouse className="h-4 w-4 text-primary" /> : <Building2 className="h-4 w-4 text-primary" />}

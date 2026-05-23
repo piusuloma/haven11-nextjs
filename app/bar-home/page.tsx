@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Clock, CheckCircle2, Wine, Trash2 } from "lucide-react";
+import { Clock, CheckCircle2, Wine, Trash2, PackagePlus } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { ShiftBanner } from "@/components/ShiftBanner";
 import { WasteModal } from "@/components/WasteModal";
+import { StockRequestModal } from "@/components/StockRequestModal";
 import { useStore, type Ticket, type TicketStatus } from "@/lib/store";
 
 const statusCfg: Record<TicketStatus, { bg: string; border: string; badge: string; label: string }> = {
@@ -26,6 +27,7 @@ function ageMins(ts: number) {
 export default function BarHome() {
   const store = useStore();
   const [wasteOpen, setWasteOpen] = useState(false);
+  const [reqOpen, setReqOpen] = useState(false);
   const tickets = store.tickets.filter((t) => t.station === "Bar" && t.branch === store.currentBranch);
 
   const counts = {
@@ -40,12 +42,20 @@ export default function BarHome() {
 
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">Drink queue</h2>
-        <button
-          onClick={() => setWasteOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
-        >
-          <Trash2 className="h-3.5 w-3.5" />Record waste
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setReqOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
+          >
+            <PackagePlus className="h-3.5 w-3.5" />Request stock
+          </button>
+          <button
+            onClick={() => setWasteOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
+          >
+            <Trash2 className="h-3.5 w-3.5" />Record waste
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-3">
@@ -76,7 +86,8 @@ export default function BarHome() {
         </div>
       )}
 
-      <WasteModal open={wasteOpen} onClose={() => setWasteOpen(false)} line="Bar" />
+      <WasteModal open={wasteOpen} onClose={() => setWasteOpen(false)} location="bar" />
+      {reqOpen && <StockRequestModal toLocation="bar" onClose={() => setReqOpen(false)} />}
     </AppShell>
   );
 }

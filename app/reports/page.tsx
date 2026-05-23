@@ -21,7 +21,8 @@ export default function Analytics() {
   const { user } = useAuth();
   const branch = store.currentBranch;
 
-  const orders = store.orders.filter((o) => o.branch === branch && !o.voided);
+  // Analytics count only paid (Closed) orders — held orders are not yet revenue.
+  const orders = store.orders.filter((o) => o.branch === branch && !o.voided && o.status === "Closed");
   const revenue = orders.reduce((s, o) => s + o.total, 0);
 
   // ── Menu engineering ──
@@ -238,7 +239,7 @@ export default function Analytics() {
             {(() => {
               const rows = store.branches
                 .filter((b) => b.kind === "branch")
-                .map((b) => ({ name: b.name, value: store.orders.filter((o) => o.branch === b.id && !o.voided).reduce((s, o) => s + o.total, 0) }));
+                .map((b) => ({ name: b.name, value: store.orders.filter((o) => o.branch === b.id && !o.voided && o.status === "Closed").reduce((s, o) => s + o.total, 0) }));
               const max = Math.max(...rows.map((r) => r.value), 1);
               return rows.map((r) => (
                 <div key={r.name}>
