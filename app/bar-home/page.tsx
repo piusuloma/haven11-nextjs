@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Clock, CheckCircle2, Wine, Trash2, PackagePlus } from "lucide-react";
+import { Clock, CheckCircle2, Wine, Trash2, PackagePlus, ClipboardCheck } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { ShiftBanner } from "@/components/ShiftBanner";
 import { WasteModal } from "@/components/WasteModal";
 import { StockRequestModal } from "@/components/StockRequestModal";
+import { ShiftCloseCountModal } from "@/components/ShiftCloseCountModal";
 import { useStore, type Ticket, type TicketStatus } from "@/lib/store";
 
 const statusCfg: Record<TicketStatus, { bg: string; border: string; badge: string; label: string }> = {
@@ -28,6 +29,7 @@ export default function BarHome() {
   const store = useStore();
   const [wasteOpen, setWasteOpen] = useState(false);
   const [reqOpen, setReqOpen] = useState(false);
+  const [countOpen, setCountOpen] = useState(false);
   const tickets = store.tickets.filter((t) => t.station === "Bar" && t.branch === store.currentBranch);
 
   const counts = {
@@ -54,6 +56,13 @@ export default function BarHome() {
             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
           >
             <Trash2 className="h-3.5 w-3.5" />Record waste
+          </button>
+          <button
+            onClick={() => setCountOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-foreground px-3 py-2 text-xs font-semibold text-background hover:bg-foreground/85"
+            title="End-of-shift count — bottles & high-value stock before clocking out"
+          >
+            <ClipboardCheck className="h-3.5 w-3.5" />Closing count
           </button>
         </div>
       </div>
@@ -88,6 +97,7 @@ export default function BarHome() {
 
       <WasteModal open={wasteOpen} onClose={() => setWasteOpen(false)} location="bar" />
       {reqOpen && <StockRequestModal toLocation="bar" onClose={() => setReqOpen(false)} />}
+      {countOpen && <ShiftCloseCountModal location="bar" onClose={() => setCountOpen(false)} />}
     </AppShell>
   );
 }

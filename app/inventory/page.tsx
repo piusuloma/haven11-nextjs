@@ -12,11 +12,12 @@ import { field } from "@/lib/csv";
 import { useAuth } from "@/lib/auth";
 import {
   useStore, statusOf, fmtQty, daysUntil, LOCATION_NAME, HUB_ID,
-  asCategory,
+  asCategory, suggestedRestockQty,
   type InventoryItem, type InventoryCategory, type Line, type StockLocation,
 } from "@/lib/store";
 import { CategoryManagerModal } from "@/components/CategoryManagerModal";
-import { Search, Filter, Download, Upload, AlertTriangle, Plus, PackagePlus, ClipboardCheck, Trash2, ShieldAlert, CalendarClock, ArrowLeftRight, PackageCheck } from "lucide-react";
+import { NewTransferModal } from "@/components/NewTransferModal";
+import { Search, Filter, Download, Upload, AlertTriangle, Plus, PackagePlus, ClipboardCheck, Trash2, ShieldAlert, CalendarClock, ArrowLeftRight, PackageCheck, Sparkles } from "lucide-react";
 
 const LINES: Line[] = ["Kitchen", "Bar", "Juice Bar", "Lounge"];
 const LOCATIONS: StockLocation[] = ["store", "kitchen", "bar", "juice-bar"];
@@ -48,9 +49,21 @@ export default function Inventory() {
   const [wasteOpen, setWasteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [requestOpen, setRequestOpen] = useState(false);
-  const [adjusting, setAdjusting] = useState<InventoryItem | null>(null);
+  // Two focused tasks instead of one dual-mode "Adjust" modal. The user picks
+  // their task on the row, then the modal serves only that task — no in-modal
+  // mode switching ("two buttons that can switch from is bad UX").
+  const [receiving, setReceiving] = useState<InventoryItem | null>(null);
+  const [counting, setCounting] = useState<InventoryItem | null>(null);
   const [showActivity, setShowActivity] = useState(false);
   const [manageCategoriesOpen, setManageCategoriesOpen] = useState(false);
+  // Suggested-restock prefill — when set, the matching modal opens with the
+  // low items already ticked and quantities filled (industry-standard
+  // "manager-in-the-loop" auto-replenishment: system suggests, human submits).
+  const [suggestPrefill, setSuggestPrefill] = useState<{ sku: string; qty: number }[] | null>(null);
+  // Always-on entry to the request flow — independent of the suggested-restock
+  // banner so the operator can proactively top up before items go red.
+  const [requestFromHub, setRequestFromHub] = useState(false);
+  const [suggestKind, setSuggestKind] = useState<"transfer" | "internal">("transfer");
   const canManageCategories = user?.role === "owner" || user?.role === "manager";
 
   const isHub = store.currentBranch === HUB_ID;
@@ -88,6 +101,30 @@ export default function Inventory() {
 
   const lowCount = branchInv.filter((s) => statusOf(s) === "Low").length;
   const outCount = branchInv.filter((s) => statusOf(s) === "Out").length;
+  // Suggested-restock items for the current view — items at or below par level
+  // with a computed suggested quantity (industry rule: stock up to 2× par,
+  // capped at source availability).
+  const suggestedRestock = useMemo(() => {
+    return branchInv
+      .filter((i) => statusOf(i) !== "OK")
+      .map((i) => {
+        // Cap against source availability so we don't suggest more than the
+        // source actually has.
+        const sourceRow = activeLoc === "store"
+          // Main Store wants from the Strong Room's Main Store.
+          ? store.inventory.find((s) => s.sku === i.sku && s.branch === HUB_ID && s.location === "store")
+          // Sub-stores want from this branch's Main Store.
+          : store.inventory.find((s) => s.sku === i.sku && s.branch === store.currentBranch && s.location === "store");
+        const want = suggestedRestockQty(i);
+        const available = sourceRow?.onHand ?? 0;
+        return { sku: i.sku, name: i.name, qty: Math.min(want, available), available, unit: i.unit, want };
+      })
+      .filter((x) => x.qty > 0);
+  }, [branchInv, activeLoc, store.inventory, store.currentBranch]);
+  // Source label for the banner — clear about where the restock comes from.
+  const restockSourceLabel = activeLoc === "store" ? "Strong Room" : `${store.branchName(store.currentBranch)} Main Store`;
+  // The banner only makes sense when there's a source other than the HUB's Main Store itself.
+  const canSuggestRestock = !(isHub && activeLoc === "store") && suggestedRestock.length > 0;
   const stockValue = branchInv.reduce((sum, s) => sum + s.onHand * s.cost, 0);
   const activeFilters =
     (lineFilter !== "All" ? 1 : 0)
@@ -126,6 +163,34 @@ export default function Inventory() {
             </button>
           ))}
         </div>
+      )}
+
+      {/* Suggested-restock banner — manager-in-the-loop auto-replenishment.
+          System suggests; user reviews and submits. Industry standard (Toast / Lightspeed). */}
+      {canSuggestRestock && (
+        <button
+          onClick={() => {
+            setSuggestPrefill(suggestedRestock.map(({ sku, qty }) => ({ sku, qty })));
+            setSuggestKind(activeLoc === "store" ? "transfer" : "internal");
+          }}
+          className="group flex w-full items-center gap-3 rounded-2xl border border-warning/40 bg-warning/10 p-4 text-left hover:bg-warning/15 transition-colors"
+        >
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-warning/20 text-warning">
+            <Sparkles className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold text-sm">
+              {suggestedRestock.length} item{suggestedRestock.length === 1 ? "" : "s"} running low — restock from {restockSourceLabel}?
+            </p>
+            <p className="text-xs text-muted-foreground line-clamp-1">
+              {suggestedRestock.slice(0, 4).map((x) => `${x.name} (${fmtQty(x.qty)} ${x.unit})`).join(", ")}
+              {suggestedRestock.length > 4 && ` + ${suggestedRestock.length - 4} more`}
+            </p>
+          </div>
+          <span className="shrink-0 rounded-lg bg-foreground px-3 py-1.5 text-xs font-semibold text-background group-hover:bg-foreground/90">
+            Review &amp; submit →
+          </span>
+        </button>
       )}
 
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -196,8 +261,19 @@ export default function Inventory() {
             <button onClick={() => setImportOpen(true)} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-surface">
               <Upload className="h-3.5 w-3.5" />Import
             </button>
+            {/* Request from Strong Room — always visible on a branch's Main Store
+                tab so the storekeeper can proactively top up (not only when red). */}
+            {activeLoc === "store" && !isHub && (
+              <button
+                onClick={() => setRequestFromHub(true)}
+                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+                title="Request stock from the Strong Room (Toast / Lightspeed transfer waybill flow)"
+              >
+                <ArrowLeftRight className="h-3.5 w-3.5" />Request from Strong Room
+              </button>
+            )}
             {activeLoc === "store" ? (
-              <button onClick={() => setNewOpen(true)} className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
+              <button onClick={() => setNewOpen(true)} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card px-3 py-1.5 text-xs font-medium hover:bg-surface">
                 <Plus className="h-3.5 w-3.5" />New product
               </button>
             ) : (
@@ -211,12 +287,12 @@ export default function Inventory() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground border-b border-border bg-surface/40">
-                <th className="font-medium px-5 py-2.5">SKU</th>
                 <th className="font-medium px-5 py-2.5">Item</th>
                 <th className="font-medium px-5 py-2.5">Line</th>
                 <th className="font-medium px-5 py-2.5 text-right">On hand</th>
                 <th className="font-medium px-5 py-2.5 text-right">Reorder</th>
                 <th className="font-medium px-5 py-2.5">Status</th>
+                <th className="font-medium px-5 py-2.5">SKU</th>
                 <th className="font-medium px-5 py-2.5 text-right">Action</th>
               </tr>
             </thead>
@@ -227,7 +303,7 @@ export default function Inventory() {
                 const status = statusOf(r);
                 return (
                   <tr key={`${r.location}:${r.sku}`} className="border-b border-border last:border-0 hover:bg-surface/50">
-                    <td className="px-5 py-3 font-mono text-xs text-muted-foreground">{r.sku}</td>
+                    {/* Item name + clickable category badge — what the eye scans for */}
                     <td className="px-5 py-3">
                       <span className="font-medium">{r.name}</span>
                       <button
@@ -252,8 +328,18 @@ export default function Inventory() {
                         {status !== "OK" && <AlertTriangle className="h-3 w-3" />}{status}
                       </span>
                     </td>
+                    {/* SKU near the end — useful as a system ID but not what staff scan for */}
+                    <td className="px-5 py-3 font-mono text-xs text-muted-foreground">{r.sku}</td>
                     <td className="px-5 py-3 text-right">
-                      <button onClick={() => setAdjusting(r)} className="text-xs font-medium text-primary hover:underline">Adjust</button>
+                      <div className="inline-flex items-center gap-3">
+                        <button onClick={() => setReceiving(r)} className="text-xs font-medium text-primary hover:underline" title="Add stock that just arrived">
+                          Receive
+                        </button>
+                        <span className="text-border">·</span>
+                        <button onClick={() => setCounting(r)} className="text-xs font-medium text-primary hover:underline" title="Reconcile against a physical count">
+                          Count
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -453,8 +539,17 @@ export default function Inventory() {
           return { added: items.length };
         }}
       />
-      {adjusting && <AdjustModal item={adjusting} onClose={() => setAdjusting(null)} />}
+      {receiving && <ReceiveStockModal item={receiving} onClose={() => setReceiving(null)} />}
+      {counting && <StockCountModal item={counting} onClose={() => setCounting(null)} />}
       {manageCategoriesOpen && <CategoryManagerModal onClose={() => setManageCategoriesOpen(false)} />}
+      {/* Suggested-restock — opens the right picker with low items pre-ticked + suggested qtys */}
+      {suggestPrefill && suggestKind === "transfer" && (
+        <NewTransferModal onClose={() => setSuggestPrefill(null)} prefill={suggestPrefill} />
+      )}
+      {requestFromHub && <NewTransferModal onClose={() => setRequestFromHub(false)} />}
+      {suggestPrefill && suggestKind === "internal" && activeLoc !== "store" && (
+        <StockRequestModal toLocation={activeLoc} onClose={() => setSuggestPrefill(null)} prefill={suggestPrefill} />
+      )}
     </AppShell>
   );
 }
@@ -603,39 +698,103 @@ function NewSkuModal({ open, onClose, location }: { open: boolean; onClose: () =
 
 // ── Adjust stock ─────────────────────────────────────────────────────────────
 
-function AdjustModal({ item, onClose }: { item: InventoryItem; onClose: () => void }) {
+/**
+ * Receive stock — single-task modal for when goods physically arrive. No mode
+ * switch inside: clicking "Receive" on the row brings the operator here and
+ * they complete this one task. Dual-unit items get an optional second field
+ * (e.g. yam: 30 kg AND ≈10 pcs).
+ */
+function ReceiveStockModal({ item, onClose }: { item: InventoryItem; onClose: () => void }) {
   const store = useStore();
-  const { user } = useAuth();
-  const [mode, setMode] = useState<"receive" | "count">("receive");
   const [amount, setAmount] = useState("");
   const [altAmount, setAltAmount] = useState("");
-
   const amt = Number(amount) || 0;
-  const projected = mode === "receive" ? item.onHand + amt : amt;
-  const variance = +(projected - item.onHand).toFixed(4);
+  const projected = item.onHand + amt;
+
+  function save() {
+    if (amt <= 0) { toast.error("Enter a quantity to receive"); return; }
+    const altAmt = item.altUnit && Number(altAmount) > 0 ? Number(altAmount) : undefined;
+    store.receiveStock(item.sku, item.location, amt, altAmt);
+    const altText = altAmt ? ` (${fmtQty(altAmt)} ${item.altUnit})` : "";
+    toast.success(`Received ${fmtQty(amt)} ${item.unit}${altText} ${item.name}`);
+    onClose();
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Receive ${item.name}`}
+      description={`${item.sku} · ${LOCATION_NAME[item.location]} · adds to ${fmtQty(item.onHand)} ${item.unit} on hand`}
+      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={save}>Confirm receipt</ModalButton></>}
+    >
+      <div className="space-y-4">
+        <Field label={`Quantity received (${item.unit})`}>
+          <input
+            type="number"
+            inputMode="decimal"
+            step="any"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            placeholder="0"
+            autoFocus
+            className={inputCls}
+          />
+        </Field>
+
+        {item.altUnit && (
+          <Field label={`Also count in ${item.altUnit} (optional)`}>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="any"
+              value={altAmount}
+              onChange={(e) => setAltAmount(e.target.value)}
+              placeholder={item.altOnHand != null ? `currently ≈ ${fmtQty(item.altOnHand)} ${item.altUnit}` : "0"}
+              className={inputCls}
+            />
+          </Field>
+        )}
+
+        <div className="rounded-xl bg-surface/60 border border-border p-4 space-y-2 text-sm">
+          <div className="flex justify-between"><span className="text-muted-foreground">On hand now</span><span className="tabular-nums font-medium">{fmtQty(item.onHand)} {item.unit}</span></div>
+          <div className="flex justify-between border-t border-border pt-2">
+            <span className="text-muted-foreground">After receipt</span>
+            <span className="tabular-nums font-bold text-primary">{fmtQty(projected)} {item.unit}</span>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Stock count — single-task modal for physical reconciliation. Variance is
+ * computed against the system's on-hand and attributed to the right staff
+ * (bartender on shift for the bar; current user otherwise).
+ */
+function StockCountModal({ item, onClose }: { item: InventoryItem; onClose: () => void }) {
+  const store = useStore();
+  const { user } = useAuth();
+  const [counted, setCounted] = useState("");
+  const amt = Number(counted) || 0;
+  const variance = +(amt - item.onHand).toFixed(4);
   const barShift = store.barShift();
   const isBarStore = item.location === "bar";
   const willAttributeTo = isBarStore && barShift ? barShift.staffName : user?.name ?? "you";
 
   function save() {
-    if (mode === "receive") {
-      if (amt <= 0) { toast.error("Enter a quantity to receive"); return; }
-      const altAmt = item.altUnit && Number(altAmount) > 0 ? Number(altAmount) : undefined;
-      store.receiveStock(item.sku, item.location, amt, altAmt);
-      const altText = altAmt ? ` (${fmtQty(altAmt)} ${item.altUnit})` : "";
-      toast.success(`Received ${fmtQty(amt)} ${item.unit}${altText} ${item.name}`);
+    if (!counted) { toast.error("Enter a counted quantity"); return; }
+    const by = isBarStore && barShift
+      ? { name: barShift.staffName, shiftId: barShift.id }
+      : { name: user?.name ?? "Unknown" };
+    const result = store.recordStockCount(item.sku, item.location, amt, by);
+    if (result.overPour) {
+      toast.warning(`Over-pour flagged to ${result.staffName} · ${fmtQty(result.variance)} ${item.unit} (₦${Math.abs(result.varianceCost).toLocaleString()})`);
+    } else if (result.variance === 0) {
+      toast.success(`${item.name} counted · no variance`);
     } else {
-      const by = isBarStore && barShift
-        ? { name: barShift.staffName, shiftId: barShift.id }
-        : { name: user?.name ?? "Unknown" };
-      const result = store.recordStockCount(item.sku, item.location, amt, by);
-      if (result.overPour) {
-        toast.warning(`Over-pour flagged to ${result.staffName} · ${fmtQty(result.variance)} ${item.unit} (₦${Math.abs(result.varianceCost).toLocaleString()})`);
-      } else if (result.variance === 0) {
-        toast.success(`${item.name} counted · no variance`);
-      } else {
-        toast.warning(`${item.name} variance ${fmtQty(result.variance)} ${item.unit} logged`);
-      }
+      toast.warning(`${item.name} variance ${fmtQty(result.variance)} ${item.unit} logged`);
     }
     onClose();
   }
@@ -644,33 +803,27 @@ function AdjustModal({ item, onClose }: { item: InventoryItem; onClose: () => vo
     <Modal
       open
       onClose={onClose}
-      title={item.name}
-      description={`${item.sku} · ${LOCATION_NAME[item.location]} · ${fmtQty(item.onHand)} ${item.unit} on hand`}
-      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={save}>Save adjustment</ModalButton></>}
+      title={`Count ${item.name}`}
+      description={`${item.sku} · ${LOCATION_NAME[item.location]} · system says ${fmtQty(item.onHand)} ${item.unit}`}
+      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={save}>Save count</ModalButton></>}
     >
       <div className="space-y-4">
-        <div className="flex gap-2">
-          <button onClick={() => setMode("receive")} className={`flex-1 flex items-center justify-center gap-2 rounded-xl border-2 py-3 text-sm font-semibold transition-colors ${mode === "receive" ? "border-primary bg-primary/5 text-primary" : "border-border text-muted-foreground hover:bg-surface"}`}>
-            <PackagePlus className="h-4 w-4" /> Receive stock
-          </button>
-          <button onClick={() => setMode("count")} className={`flex-1 flex items-center justify-center gap-2 rounded-xl border-2 py-3 text-sm font-semibold transition-colors ${mode === "count" ? "border-primary bg-primary/5 text-primary" : "border-border text-muted-foreground hover:bg-surface"}`}>
-            <ClipboardCheck className="h-4 w-4" /> Stock count
-          </button>
-        </div>
-
-        <Field label={mode === "receive" ? `Quantity received (${item.unit})` : `Counted quantity (${item.unit})`}>
-          <input type="number" inputMode="decimal" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" autoFocus className={inputCls} />
+        <Field label={`Physical count (${item.unit})`}>
+          <input
+            type="number"
+            inputMode="decimal"
+            step="any"
+            value={counted}
+            onChange={(e) => setCounted(e.target.value)}
+            placeholder="0"
+            autoFocus
+            className={inputCls}
+          />
         </Field>
 
-        {mode === "receive" && item.altUnit && (
-          <Field label={`Also count in ${item.altUnit} (optional)`}>
-            <input type="number" inputMode="decimal" step="any" value={altAmount} onChange={(e) => setAltAmount(e.target.value)} placeholder={item.altOnHand != null ? `currently ≈ ${fmtQty(item.altOnHand)} ${item.altUnit}` : "0"} className={inputCls} />
-          </Field>
-        )}
-
         <div className="rounded-xl bg-surface/60 border border-border p-4 space-y-2 text-sm">
-          <div className="flex justify-between"><span className="text-muted-foreground">Current</span><span className="tabular-nums font-medium">{fmtQty(item.onHand)} {item.unit}</span></div>
-          <div className="flex justify-between"><span className="text-muted-foreground">After adjustment</span><span className="tabular-nums font-medium">{fmtQty(Math.max(0, projected))} {item.unit}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">System on hand</span><span className="tabular-nums font-medium">{fmtQty(item.onHand)} {item.unit}</span></div>
+          <div className="flex justify-between"><span className="text-muted-foreground">You counted</span><span className="tabular-nums font-medium">{fmtQty(amt)} {item.unit}</span></div>
           <div className="flex justify-between border-t border-border pt-2">
             <span className="text-muted-foreground">Variance</span>
             <span className={`tabular-nums font-bold ${variance < 0 ? "text-destructive" : variance > 0 ? "text-primary" : ""}`}>
@@ -678,7 +831,8 @@ function AdjustModal({ item, onClose }: { item: InventoryItem; onClose: () => vo
             </span>
           </div>
         </div>
-        {mode === "count" && (
+
+        {counted && (
           <p className="text-xs text-muted-foreground">
             Variance will be attributed to <span className="font-semibold text-foreground">{willAttributeTo}</span>
             {isBarStore && barShift && " (bartender on shift)"}.

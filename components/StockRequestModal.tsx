@@ -19,7 +19,16 @@ import { Modal, ModalButton } from "@/components/Modal";
  * single scrollable list with a search box, category chips, and per-row
  * checkboxes that reveal a qty input when ticked.
  */
-export function StockRequestModal({ toLocation, onClose }: { toLocation: StockLocation; onClose: () => void }) {
+export function StockRequestModal({
+  toLocation, onClose, prefill,
+}: {
+  toLocation: StockLocation;
+  onClose: () => void;
+  /** Optional pre-tick list — used by "Suggest restock" to open the picker with
+   *  the low items already selected and quantities filled in. The operator can
+   *  adjust before submitting. */
+  prefill?: { sku: string; qty: number }[];
+}) {
   const store = useStore();
   const { user } = useAuth();
   const storeItems = store.inventory.filter(
@@ -28,14 +37,31 @@ export function StockRequestModal({ toLocation, onClose }: { toLocation: StockLo
 
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>("All");
+  // Default the Line filter to the requesting station so the bartender doesn't
+  // wade through Kitchen items. "store" (Main Store sub-stocking from the hub
+  // — though that path goes through /transfers, not this modal) shows "All".
+  const defaultLine = toLocation === "kitchen" ? "Kitchen"
+    : toLocation === "bar" ? "Bar"
+    : toLocation === "juice-bar" ? "Juice Bar"
+    : "All";
+  const [line, setLine] = useState<string>(defaultLine);
   // sku → quantity string. Presence in the map = ticked.
-  const [picked, setPicked] = useState<Record<string, string>>({});
+  const [picked, setPicked] = useState<Record<string, string>>(
+    () => Object.fromEntries((prefill ?? []).map((p) => [p.sku, String(p.qty)])),
+  );
 
   // Only show categories that have at least one item in the Main Store.
   const presentCategories = useMemo(() => {
     const set = new Set<string>(storeItems.map((i) => i.category));
     return ["All", ...store.inventoryCategories.filter((c) => set.has(c))];
   }, [storeItems, store.inventoryCategories]);
+
+  // Only show lines that have at least one item in the Main Store. Stays compact
+  // even when the catalogue grows — irrelevant lines never appear as chips.
+  const presentLines = useMemo(() => {
+    const set = new Set<string>(storeItems.map((i) => i.line));
+    return ["All", ...["Kitchen", "Bar", "Juice Bar", "Lounge"].filter((l) => set.has(l))];
+  }, [storeItems]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -45,9 +71,10 @@ export function StockRequestModal({ toLocation, onClose }: { toLocation: StockLo
         || i.sku.toLowerCase().includes(q)
         || i.category.toLowerCase().includes(q);
       const matchesCat = category === "All" || i.category === category;
-      return matchesQ && matchesCat;
+      const matchesLine = line === "All" || i.line === line;
+      return matchesQ && matchesCat && matchesLine;
     });
-  }, [storeItems, query, category]);
+  }, [storeItems, query, category, line]);
 
   // Group the filtered list by category so 50-row picks stay scannable.
   const grouped = useMemo(() => {
@@ -150,8 +177,26 @@ export function StockRequestModal({ toLocation, onClose }: { toLocation: StockLo
             </button>
           </div>
 
+          {/* Line filter — Kitchen / Bar / Juice Bar / Lounge. Pre-set to the
+              requesting station so the operator only sees relevant items by default. */}
+          {presentLines.length > 2 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Section</span>
+              {presentLines.map((l) => (
+                <button
+                  key={l}
+                  onClick={() => setLine(l)}
+                  className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${line === l ? "bg-foreground text-background" : "bg-surface text-foreground/70 hover:text-foreground"}`}
+                >
+                  {l}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Category chips */}
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Category</span>
             {presentCategories.map((c) => (
               <button
                 key={c}

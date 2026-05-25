@@ -14,7 +14,9 @@ import {
 import {
   Star, Plus, Search, Gift, MessageSquareWarning, Smile, Cake,
   Wallet, Receipt, FileText, Send, Printer, AlertCircle, CreditCard, Coins,
+  Settings, Pencil,
 } from "lucide-react";
+import { DateRangePicker, inRange, type DateRange } from "@/components/DateRangePicker";
 
 const tierClass: Record<CustomerTier, string> = {
   VIP: "bg-foreground text-background",
@@ -230,8 +232,26 @@ export default function Customers() {
         )}
       </section>
 
-      {/* Complaints + feedback */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Complaints + feedback — collapsed by default so the page lands clean.
+          Each customer's complaints & feedback are also visible inside their 360. */}
+      <details className="group rounded-xl border border-border bg-card">
+        <summary className="flex items-center justify-between gap-2 px-5 py-3.5 cursor-pointer select-none hover:bg-surface/40">
+          <span className="text-sm font-semibold inline-flex items-center gap-2">
+            <MessageSquareWarning className="h-4 w-4 text-muted-foreground" />
+            Complaints &amp; feedback
+            {openComplaints.length > 0 && (
+              <span className="rounded-full bg-destructive/10 text-destructive px-2 py-0.5 text-[10px] font-semibold">
+                {openComplaints.length} open
+              </span>
+            )}
+            <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] text-muted-foreground">
+              {branchFeedback.length} feedback
+            </span>
+          </span>
+          <span className="text-[11px] text-muted-foreground group-open:hidden">Show →</span>
+          <span className="text-[11px] text-muted-foreground hidden group-open:inline">Hide</span>
+        </summary>
+        <div className="p-5 pt-2 grid grid-cols-1 lg:grid-cols-2 gap-4 [&>div]:rounded-xl [&>div]:border [&>div]:border-border [&>div]:bg-card [&>div]:p-5">
         <div className="rounded-xl border border-border bg-card p-5">
           <header className="flex items-center justify-between">
             <h2 className="text-sm font-semibold flex items-center gap-2"><MessageSquareWarning className="h-4 w-4 text-muted-foreground" />Complaint tickets</h2>
@@ -292,11 +312,31 @@ export default function Customers() {
             </ul>
           )}
         </div>
-      </section>
+        </div>
+      </details>
 
-      {/* Marketing & retention */}
-      <div className="rounded-xl border border-border bg-card p-5">
-        <h2 className="text-sm font-semibold flex items-center gap-2"><Gift className="h-4 w-4 text-muted-foreground" />Marketing &amp; retention</h2>
+      {/* Marketing & retention — also collapsed; manager opens when running a campaign */}
+      <details className="group rounded-xl border border-border bg-card">
+        <summary className="flex items-center justify-between gap-2 px-5 py-3.5 cursor-pointer select-none hover:bg-surface/40">
+          <span className="text-sm font-semibold inline-flex items-center gap-2">
+            <Gift className="h-4 w-4 text-muted-foreground" />
+            Marketing &amp; retention
+            {winBack.length > 0 && (
+              <span className="rounded-full bg-warning/15 text-foreground px-2 py-0.5 text-[10px] font-semibold">
+                {winBack.length} lapsed
+              </span>
+            )}
+            {birthdays.length > 0 && (
+              <span className="rounded-full bg-primary/10 text-primary px-2 py-0.5 text-[10px] font-semibold">
+                {birthdays.length} birthday{birthdays.length === 1 ? "" : "s"}
+              </span>
+            )}
+          </span>
+          <span className="text-[11px] text-muted-foreground group-open:hidden">Show →</span>
+          <span className="text-[11px] text-muted-foreground hidden group-open:inline">Hide</span>
+        </summary>
+        <div className="px-5 pb-5 pt-1">
+        <h2 className="sr-only">Marketing &amp; retention</h2>
         <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Win-back — not seen in 30+ days</p>
@@ -357,7 +397,8 @@ export default function Customers() {
             )}
           </div>
         </div>
-      </div>
+        </div>
+      </details>
 
       {viewing && (
         <CustomerModal
@@ -405,8 +446,13 @@ function AccountChips({ wallet, credit, creditLimit }: { wallet: number; credit:
 
 // ── Customer 360 ─────────────────────────────────────────────────────────────
 
-type CustomerTab = "Profile" | "Account" | "Activity";
-
+/**
+ * Single-screen customer view, designed for non-technical staff. Front-loads
+ * the two questions every cashier actually asks: *"What did they have last
+ * time?"* and *"Do they have money on file / owe us anything?"*. Advanced
+ * settings (credit limit, manual charges, write-offs) live behind a gear icon
+ * so the default view stays clean.
+ */
 function CustomerModal({
   customer, stats, onClose, canManageAccounts, me, onOpenInvoice,
 }: {
@@ -422,220 +468,183 @@ function CustomerModal({
   const fb = store.feedback.filter((f) => f.phone === c.phone);
   const tickets = store.complaints.filter((t) => t.phone === c.phone);
   const lastComplaint = tickets[0];
-  // Lifetime spend across all wallet spends + completed orders + credit charges.
-  const ledger = store.customerLedger.filter((l) => l.customerId === c.id).slice(0, 20);
-  const invoices = store.customerInvoices.filter((i) => i.customerId === c.id);
+  const orderHistory = useMemo(
+    () => store.orders
+      .filter((o) => !o.voided && o.customer?.phone === c.phone)
+      .sort((a, b) => b.at - a.at),
+    [store.orders, c.phone],
+  );
+  const lastOrder = orderHistory[0];
+  const openInvoices = store.customerInvoices.filter(
+    (i) => i.customerId === c.id && i.status !== "Paid" && i.status !== "Void",
+  );
 
-  const [tab, setTab] = useState<CustomerTab>(c.credit > 0 || c.wallet > 0 || c.creditLimit > 0 ? "Account" : "Profile");
+  const hasWallet = c.wallet > 0;
+  const hasCredit = c.credit > 0 || c.creditLimit > 0;
+
   const [topUpOpen, setTopUpOpen] = useState(false);
-  const [chargeOpen, setChargeOpen] = useState(false);
+  // Two focused entry points instead of one wallet/credit mode switcher.
+  const [walletChargeOpen, setWalletChargeOpen] = useState(false);
+  const [houseChargeOpen, setHouseChargeOpen] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [statementOpen, setStatementOpen] = useState(false);
   const [limitOpen, setLimitOpen] = useState(false);
+  const [orderHistoryOpen, setOrderHistoryOpen] = useState(false);
+  const [accountHistoryOpen, setAccountHistoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   return (
-    <Modal open onClose={onClose} title={c.name} description={`${c.phone}${c.email ? ` · ${c.email}` : ""}`} size="xl">
+    <Modal
+      open
+      onClose={onClose}
+      title={
+        <span className="flex items-center gap-2">
+          {c.name}
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${tierClass[c.tier]}`}>
+            {c.tier === "VIP" && <Star className="h-3 w-3" />}{c.tier}
+          </span>
+        </span>
+      }
+      description={`${c.phone}${c.email ? ` · ${c.email}` : ""}`}
+      size="lg"
+      headerExtra={canManageAccounts && (
+        <button
+          type="button"
+          onClick={() => setSettingsOpen((o) => !o)}
+          className="grid h-8 w-8 place-items-center rounded-lg border border-border hover:bg-surface"
+          aria-label="Settings"
+        >
+          <Settings className="h-4 w-4 text-muted-foreground" />
+        </button>
+      )}
+    >
       <div className="space-y-4">
-        {/* Tab strip */}
-        <div className="flex gap-1 border-b border-border">
-          {(["Profile", "Account", "Activity"] as CustomerTab[]).map((t) => (
+        {/* Last order — answers "what did they have last time?" up front */}
+        {lastOrder ? (
+          <div className="rounded-2xl border border-border bg-surface/40 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Last order · {timeAgo(lastOrder.at)}</p>
+                <p className="mt-1 text-base font-semibold tabular-nums">₦{lastOrder.total.toLocaleString()}</p>
+                <p className="text-xs text-muted-foreground">
+                  {lastOrder.channel}{lastOrder.table && lastOrder.channel === "Dine-in" ? ` · ${lastOrder.table}` : ""} · paid via {lastOrder.method}
+                </p>
+              </div>
+              <button
+                onClick={() => setOrderHistoryOpen(true)}
+                className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-semibold hover:bg-surface"
+              >
+                See all {orderHistory.length} orders →
+              </button>
+            </div>
+            <p className="mt-2 text-sm text-foreground/80 line-clamp-1">
+              {lastOrder.lines.map((l) => `${l.qty}× ${l.name}`).join(", ")}
+            </p>
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-border bg-surface/30 p-4 text-center">
+            <p className="text-sm text-muted-foreground">No orders yet — first-time customer.</p>
+          </div>
+        )}
+
+        {/* ONE balance summary card — plain language, only what matters now */}
+        {hasWallet || hasCredit ? (
+          <div className="space-y-2">
+            {hasWallet && (
+              <WalletCard customer={c} canManage={canManageAccounts} onTopUp={() => setTopUpOpen(true)} />
+            )}
+            {hasCredit && (
+              <CreditCard_ customer={c} canManage={canManageAccounts}
+                openInvoices={openInvoices.length}
+                onRecordPayment={() => setPaymentOpen(true)}
+                onGenerate={() => setStatementOpen(true)}
+                onSetLimit={() => setLimitOpen(true)}
+                onOpenInvoice={(inv) => onOpenInvoice(inv)}
+                latestOpenInvoice={openInvoices.sort((a, b) => a.dueDate.localeCompare(b.dueDate))[0]} />
+            )}
+          </div>
+        ) : canManageAccounts && (
+          <div className="rounded-2xl border border-dashed border-border p-4 text-center">
+            <p className="text-sm text-muted-foreground">No money on file. Want to set up an account?</p>
+            <div className="mt-2 flex justify-center gap-2">
+              <button onClick={() => setTopUpOpen(true)} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
+                Take a deposit
+              </button>
+              <button onClick={() => setLimitOpen(true)} className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-semibold hover:bg-surface">
+                Open a house tab
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Stats — one line, no boxes */}
+        <p className="text-sm text-muted-foreground">
+          <span className="font-semibold text-foreground">{stats.visits}</span> visit{stats.visits === 1 ? "" : "s"}
+          {" · "}
+          <span className="font-semibold text-foreground">₦{(stats.ltv / 1000).toFixed(0)}k</span> lifetime
+          {stats.favorite !== "—" && <> · loves <span className="font-semibold text-foreground">{stats.favorite}</span></>}
+          {stats.lastDays != null && <> · last seen {stats.lastDays === 0 ? "today" : `${stats.lastDays}d ago`}</>}
+        </p>
+
+        {/* Notes & flags */}
+        {(c.note || c.birthday || lastComplaint) && (
+          <div className="rounded-xl bg-surface/60 border border-border p-3 text-xs space-y-1">
+            {c.note && <p>📝 {c.note}</p>}
+            {c.birthday && <p><Cake className="inline h-3 w-3 mr-1 text-muted-foreground" />Birthday {c.birthday}</p>}
+            {lastComplaint && <p className="text-destructive">⚠ Last complaint: {lastComplaint.subject} ({lastComplaint.status})</p>}
+          </div>
+        )}
+
+        {/* Big buttons — the two histories */}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => setOrderHistoryOpen(true)}
+            className="flex items-center justify-center gap-2 rounded-xl border border-border bg-card py-3 text-sm font-semibold hover:bg-surface"
+          >
+            <Receipt className="h-4 w-4 text-muted-foreground" />Order history
+            <span className="rounded-full bg-surface px-1.5 text-[10px] tabular-nums">{orderHistory.length}</span>
+          </button>
+          {(hasWallet || hasCredit) && (
             <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`relative px-3 py-2 text-sm font-semibold transition-colors ${tab === t ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setAccountHistoryOpen(true)}
+              className="flex items-center justify-center gap-2 rounded-xl border border-border bg-card py-3 text-sm font-semibold hover:bg-surface"
             >
-              {t}
-              {tab === t && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-primary" />}
+              <Wallet className="h-4 w-4 text-muted-foreground" />Account history
             </button>
-          ))}
+          )}
         </div>
 
-        {tab === "Profile" && (
-          <div className="space-y-5">
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1.5">Tier</p>
-              <div className="flex flex-wrap gap-2">
-                {(["New", "Regular", "VIP", "Blacklisted"] as CustomerTier[]).map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => { store.updateCustomer({ ...c, tier: t }); toast.success(`${c.name} → ${t}`); }}
-                    className={`rounded-lg border-2 px-3 py-1.5 text-xs font-semibold transition-colors ${c.tier === t ? "border-primary bg-primary/5 text-primary" : "border-border text-muted-foreground hover:bg-surface"}`}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <Box label="Visits" value={String(stats.visits)} />
-              <Box label="Lifetime value" value={`₦${(stats.ltv / 1000).toFixed(0)}k`} />
-              <Box label="Avg spend" value={`₦${stats.visits ? Math.round(stats.ltv / stats.visits).toLocaleString() : 0}`} />
-              <Box label="Last seen" value={stats.lastDays == null ? "—" : `${stats.lastDays}d ago`} />
-            </div>
-            <div className="rounded-xl bg-surface/60 border border-border p-3 text-sm space-y-1">
-              <p><span className="text-muted-foreground">Favourite:</span> <span className="font-medium">{stats.favorite}</span></p>
-              {c.birthday && <p><span className="text-muted-foreground">Birthday:</span> <span className="font-medium">{c.birthday}</span></p>}
-              {c.lastContactedAt != null && <p><span className="text-muted-foreground">Last contact:</span> <span className="font-medium">{c.lastContactKind ?? "Outreach"} · {timeAgo(c.lastContactedAt)}</span></p>}
-              {c.note && <p><span className="text-muted-foreground">Note:</span> <span className="font-medium">{c.note}</span></p>}
-              {lastComplaint && <p className="text-destructive">⚠ Last complaint: {lastComplaint.subject} ({lastComplaint.status})</p>}
-            </div>
-          </div>
-        )}
-
-        {tab === "Account" && (
-          <div className="space-y-5">
-            {/* Two balance cards side-by-side */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {/* Wallet card */}
-              <div className="rounded-2xl border-2 border-primary/30 bg-primary/5 p-4">
-                <div className="flex items-center justify-between">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-primary">
-                    <Wallet className="h-3.5 w-3.5" />Wallet (prepaid)
-                  </span>
-                </div>
-                <p className="mt-2 text-3xl font-bold tabular-nums text-primary">₦{c.wallet.toLocaleString()}</p>
-                <p className="text-[11px] text-muted-foreground mt-0.5">Customer has prepaid this much. Spends draw it down.</p>
-                {canManageAccounts && (
-                  <div className="mt-3 flex gap-1.5">
-                    <button onClick={() => setTopUpOpen(true)} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
-                      <Plus className="h-3 w-3" />Top up
-                    </button>
-                    {c.wallet > 0 && (
-                      <button onClick={() => setChargeOpen(true)} className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">
-                        Charge spend
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* House account card */}
-              <div className={`rounded-2xl border-2 p-4 ${c.creditLimit === 0 ? "border-border bg-surface/30" : c.credit > c.creditLimit * 0.8 ? "border-destructive/30 bg-destructive/5" : "border-warning/30 bg-warning/5"}`}>
-                <div className="flex items-center justify-between">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider">
-                    <CreditCard className="h-3.5 w-3.5" />House account (credit)
-                  </span>
-                  {canManageAccounts && (
-                    <button onClick={() => setLimitOpen(true)} className="text-[11px] font-medium text-primary hover:underline">
-                      {c.creditLimit > 0 ? "Edit limit" : "Enable"}
-                    </button>
-                  )}
-                </div>
-                {c.creditLimit === 0 ? (
-                  <>
-                    <p className="mt-2 text-2xl font-bold tabular-nums text-muted-foreground">— disabled —</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">Set a credit limit to allow charge-on-account.</p>
-                  </>
-                ) : (
-                  <>
-                    <p className="mt-2 text-3xl font-bold tabular-nums">₦{c.credit.toLocaleString()}</p>
-                    <p className="text-[11px] text-muted-foreground mt-0.5">
-                      owed · limit ₦{c.creditLimit.toLocaleString()} · ₦{Math.max(0, c.creditLimit - c.credit).toLocaleString()} available
-                    </p>
-                    {/* Usage bar */}
-                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-border">
-                      <div className={`h-full ${c.credit > c.creditLimit * 0.8 ? "bg-destructive" : c.credit > c.creditLimit * 0.5 ? "bg-warning" : "bg-primary"}`}
-                        style={{ width: `${Math.min(100, (c.credit / c.creditLimit) * 100)}%` }} />
-                    </div>
-                    {canManageAccounts && (
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        <button onClick={() => setChargeOpen(true)} className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">
-                          Post charge
-                        </button>
-                        {c.credit > 0 && (
-                          <>
-                            <button onClick={() => setPaymentOpen(true)} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
-                              Record payment
-                            </button>
-                            <button onClick={() => setStatementOpen(true)} className="inline-flex items-center gap-1 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">
-                              <FileText className="h-3 w-3" />Generate statement
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* Invoices list */}
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Statements</p>
-              {invoices.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No statements issued yet.</p>
-              ) : (
-                <ul className="divide-y divide-border rounded-xl border border-border">
-                  {invoices.map((inv) => {
-                    const overdueDays = Math.floor((Date.now() - new Date(inv.dueDate).getTime()) / 86400_000);
-                    return (
-                      <li key={inv.id} className="flex flex-wrap items-center justify-between gap-3 px-3 py-2.5 hover:bg-surface/40">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-xs font-semibold">{inv.id}</span>
-                            <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${invoiceStatusClass(inv.status)}`}>{inv.status}</span>
-                          </div>
-                          <p className="text-[11px] text-muted-foreground mt-0.5">
-                            {inv.periodStart} → {inv.periodEnd} · due {inv.dueDate}
-                            {inv.status !== "Paid" && inv.status !== "Void" && overdueDays > 0 && (
-                              <span className="text-destructive font-medium"> · {overdueDays}d overdue</span>
-                            )}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="text-right">
-                            <p className="tabular-nums font-semibold">₦{(inv.subtotal - inv.paid).toLocaleString()}</p>
-                            {inv.paid > 0 && <p className="text-[10px] text-muted-foreground tabular-nums">of ₦{inv.subtotal.toLocaleString()}</p>}
-                          </div>
-                          <button onClick={() => onOpenInvoice(inv)} className="text-xs font-medium text-primary hover:underline">Open</button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-            </div>
-
-            {/* Recent ledger entries */}
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Recent transactions</p>
-              {ledger.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No wallet or credit activity yet.</p>
-              ) : (
-                <ul className="divide-y divide-border rounded-xl border border-border max-h-64 overflow-y-auto">
-                  {ledger.map((e) => <LedgerRow key={e.id} entry={e} />)}
-                </ul>
-              )}
-            </div>
-          </div>
-        )}
-
-        {tab === "Activity" && (
-          <div className="space-y-5">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Feedback history</p>
-              {fb.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No feedback on record.</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {fb.map((f) => (
-                    <li key={f.id} className="text-sm flex justify-between border-b border-border last:border-0 py-1.5">
-                      <span className="italic text-foreground/80">&ldquo;{f.comment}&rdquo;</span>
-                      <span className={`shrink-0 ml-2 text-xs font-medium ${f.sentiment === "Positive" ? "text-primary" : f.sentiment === "Negative" ? "text-destructive" : "text-muted-foreground"}`}>{f.sentiment}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+        {/* Activity recap — feedback only */}
+        {fb.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Recent feedback</p>
+            <ul className="space-y-1">
+              {fb.slice(0, 3).map((f) => (
+                <li key={f.id} className="text-xs flex justify-between gap-3 border-b border-border last:border-0 py-1.5">
+                  <span className="italic text-foreground/80 truncate">&ldquo;{f.comment}&rdquo;</span>
+                  <span className={`shrink-0 text-[10px] font-medium ${f.sentiment === "Positive" ? "text-primary" : f.sentiment === "Negative" ? "text-destructive" : "text-muted-foreground"}`}>{f.sentiment}</span>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>
 
       {topUpOpen && <TopUpModal customer={c} me={me} onClose={() => setTopUpOpen(false)} />}
-      {chargeOpen && <PostChargeModal customer={c} me={me} onClose={() => setChargeOpen(false)} />}
+      {walletChargeOpen && <ChargeWalletModal customer={c} me={me} onClose={() => setWalletChargeOpen(false)} />}
+      {houseChargeOpen && <PostHouseChargeModal customer={c} me={me} onClose={() => setHouseChargeOpen(false)} />}
       {paymentOpen && <RecordPaymentModal customer={c} me={me} onClose={() => setPaymentOpen(false)} />}
       {statementOpen && <GenerateStatementModal customer={c} me={me} onClose={() => setStatementOpen(false)} onGenerated={onOpenInvoice} />}
       {limitOpen && <CreditLimitModal customer={c} me={me} onClose={() => setLimitOpen(false)} />}
+      {orderHistoryOpen && <OrderHistoryModal customer={c} orders={orderHistory} onClose={() => setOrderHistoryOpen(false)} />}
+      {accountHistoryOpen && <AccountHistoryModal customer={c} onClose={() => setAccountHistoryOpen(false)} onOpenInvoice={onOpenInvoice} />}
+      {settingsOpen && <AccountSettingsMenu customer={c} canManage={canManageAccounts}
+        onChargeWallet={() => { setSettingsOpen(false); setWalletChargeOpen(true); }}
+        onPostHouseCharge={() => { setSettingsOpen(false); setHouseChargeOpen(true); }}
+        onSetLimit={() => { setSettingsOpen(false); setLimitOpen(true); }}
+        onChangeTier={() => setSettingsOpen(false)}
+        onClose={() => setSettingsOpen(false)}
+      />}
     </Modal>
   );
 }
@@ -718,52 +727,76 @@ function TopUpModal({ customer, me, onClose }: { customer: Customer; me: string;
 
 // ── Post charge (manual, simulating a POS sale) ──────────────────────────────
 
-function PostChargeModal({ customer, me, onClose }: { customer: Customer; me: string; onClose: () => void }) {
+/**
+ * Single-task: charge against the customer's prepaid wallet. Used when the POS
+ * isn't yet linked to this customer (the manual entry path). No mode switch —
+ * the caller decides upfront whether it's a wallet spend or a house charge,
+ * and the right modal opens.
+ */
+function ChargeWalletModal({ customer, me, onClose }: { customer: Customer; me: string; onClose: () => void }) {
   const store = useStore();
   const [amount, setAmount] = useState("");
-  const [against, setAgainst] = useState<"wallet" | "credit">(customer.wallet > 0 ? "wallet" : "credit");
   const [note, setNote] = useState("");
 
   function submit() {
     const amt = Number(amount);
     if (!amt || amt <= 0) { toast.error("Enter an amount"); return; }
-    const res = against === "wallet"
-      ? store.spendCustomerWallet({ customerId: customer.id, amount: amt, note: note.trim() || undefined, by: me })
-      : store.chargeCustomerAccount({ customerId: customer.id, amount: amt, note: note.trim() || undefined, by: me });
-    if (!res.ok) { toast.error(res.error ?? "Couldn't post charge"); return; }
-    toast.success(`₦${amt.toLocaleString()} ${against === "wallet" ? "drawn from wallet" : "posted to house account"}`);
+    const res = store.spendCustomerWallet({ customerId: customer.id, amount: amt, note: note.trim() || undefined, by: me });
+    if (!res.ok) { toast.error(res.error ?? ""); return; }
+    toast.success(`₦${amt.toLocaleString()} drawn from ${customer.name}'s wallet`);
     onClose();
   }
 
-  const canCredit = customer.creditLimit > 0;
-  const canWallet = customer.wallet > 0;
-
   return (
-    <Modal open onClose={onClose} title="Post charge" description={`${customer.name} · manual entry (used when POS isn't linked to this customer)`}
-      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={submit}>Post charge</ModalButton></>}>
+    <Modal open onClose={onClose}
+      title="Charge wallet"
+      description={`${customer.name} · ₦${customer.wallet.toLocaleString()} on file`}
+      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={submit}>Charge wallet</ModalButton></>}
+    >
       <div className="space-y-4">
-        <Field label="Pay against">
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => setAgainst("wallet")}
-              disabled={!canWallet}
-              className={`flex-1 rounded-lg border-2 px-3 py-2 text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${against === "wallet" ? "border-primary bg-primary/5 text-primary" : "border-border text-muted-foreground hover:bg-surface"}`}
-            >
-              Wallet · ₦{customer.wallet.toLocaleString()}
-            </button>
-            <button
-              type="button"
-              onClick={() => setAgainst("credit")}
-              disabled={!canCredit}
-              className={`flex-1 rounded-lg border-2 px-3 py-2 text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${against === "credit" ? "border-primary bg-primary/5 text-primary" : "border-border text-muted-foreground hover:bg-surface"}`}
-            >
-              House · ₦{(customer.creditLimit - customer.credit).toLocaleString()} left
-            </button>
-          </div>
-        </Field>
         <Field label="Amount (₦)"><input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" autoFocus className={inputCls} /></Field>
         <Field label="Note"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Dinner · party of 4" className={inputCls} /></Field>
+        <p className="text-[11px] text-muted-foreground">
+          Wallet balance after this charge: <span className="font-semibold tabular-nums text-foreground">₦{Math.max(0, customer.wallet - (Number(amount) || 0)).toLocaleString()}</span>
+        </p>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Single-task: post a charge to the customer's house account (credit). Blocked
+ * when the customer has no credit limit (the gear-icon flow surfaces an
+ * "Open a house tab" entry point for that case).
+ */
+function PostHouseChargeModal({ customer, me, onClose }: { customer: Customer; me: string; onClose: () => void }) {
+  const store = useStore();
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+
+  function submit() {
+    const amt = Number(amount);
+    if (!amt || amt <= 0) { toast.error("Enter an amount"); return; }
+    const res = store.chargeCustomerAccount({ customerId: customer.id, amount: amt, note: note.trim() || undefined, by: me });
+    if (!res.ok) { toast.error(res.error ?? ""); return; }
+    toast.success(`₦${amt.toLocaleString()} posted to ${customer.name}'s house account`);
+    onClose();
+  }
+
+  const remainingCredit = customer.creditLimit - customer.credit;
+
+  return (
+    <Modal open onClose={onClose}
+      title="Post house charge"
+      description={`${customer.name} · ₦${remainingCredit.toLocaleString()} of ₦${customer.creditLimit.toLocaleString()} credit available`}
+      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={submit}>Post charge</ModalButton></>}
+    >
+      <div className="space-y-4">
+        <Field label="Amount (₦)"><input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" autoFocus className={inputCls} /></Field>
+        <Field label="Note"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Dinner · party of 4" className={inputCls} /></Field>
+        <p className="text-[11px] text-muted-foreground">
+          They&apos;ll owe ₦{(customer.credit + (Number(amount) || 0)).toLocaleString()} after this — settled on the next statement.
+        </p>
       </div>
     </Modal>
   );
@@ -1218,5 +1251,262 @@ function Box({ label, value }: { label: string; value: string }) {
       <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
       <p className="mt-0.5 text-sm font-bold tabular-nums">{value}</p>
     </div>
+  );
+}
+
+// ── Balance cards (used in customer 360) ────────────────────────────────────
+
+function WalletCard({ customer, canManage, onTopUp }: { customer: Customer; canManage: boolean; onTopUp: () => void }) {
+  return (
+    <div className="rounded-2xl border-2 border-primary/30 bg-primary/5 p-4 flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-primary flex items-center gap-1.5">
+          <Wallet className="h-3.5 w-3.5" />Has money on file
+        </p>
+        <p className="mt-1 text-2xl font-bold tabular-nums text-primary">₦{customer.wallet.toLocaleString()}</p>
+        <p className="text-[11px] text-muted-foreground">Customer prepaid — spends draw it down.</p>
+      </div>
+      {canManage && (
+        <button onClick={onTopUp} className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90">
+          Top up
+        </button>
+      )}
+    </div>
+  );
+}
+
+function CreditCard_({
+  customer, canManage, openInvoices, onRecordPayment, onGenerate, onSetLimit, onOpenInvoice, latestOpenInvoice,
+}: {
+  customer: Customer;
+  canManage: boolean;
+  openInvoices: number;
+  onRecordPayment: () => void;
+  onGenerate: () => void;
+  onSetLimit: () => void;
+  onOpenInvoice: (inv: CustomerInvoice) => void;
+  latestOpenInvoice?: CustomerInvoice;
+}) {
+  const owesMoney = customer.credit > 0;
+  // Heuristic-free decision: if they owe money, the primary action is "Record payment".
+  // If they have an open statement and owe money, secondary action is to view the
+  // statement (one click → one screen → one task). If they owe but no statement
+  // exists yet, secondary action is to issue one.
+  return (
+    <div className={`rounded-2xl border-2 p-4 ${owesMoney && customer.credit > customer.creditLimit * 0.8 ? "border-destructive/30 bg-destructive/5" : owesMoney ? "border-warning/30 bg-warning/5" : "border-border bg-surface/30"}`}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wider flex items-center gap-1.5">
+            <CreditCard className="h-3.5 w-3.5" />
+            {owesMoney ? "Owes you" : "House tab open"}
+          </p>
+          <p className={`mt-1 text-2xl font-bold tabular-nums ${owesMoney && customer.credit > customer.creditLimit * 0.8 ? "text-destructive" : ""}`}>
+            ₦{customer.credit.toLocaleString()}
+          </p>
+          <p className="text-[11px] text-muted-foreground">
+            ₦{Math.max(0, customer.creditLimit - customer.credit).toLocaleString()} of ₦{customer.creditLimit.toLocaleString()} limit available
+          </p>
+        </div>
+        {canManage && (
+          <div className="flex flex-col items-end gap-1">
+            {owesMoney ? (
+              <button onClick={onRecordPayment} className="rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90">
+                Record payment
+              </button>
+            ) : (
+              <button onClick={onSetLimit} className="rounded-xl border border-border bg-card px-4 py-2 text-sm font-semibold hover:bg-surface">
+                Change limit
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {/* Quiet inline info — one line, not a separate card */}
+      {owesMoney && latestOpenInvoice && (
+        <button
+          onClick={() => onOpenInvoice(latestOpenInvoice)}
+          className="mt-3 flex w-full items-center justify-between rounded-lg border border-border bg-card px-3 py-2 text-xs hover:bg-surface text-left"
+        >
+          <span className="font-mono">{latestOpenInvoice.id}</span>
+          <span className="text-muted-foreground">{openInvoices > 1 ? `+${openInvoices - 1} more · ` : ""}due {latestOpenInvoice.dueDate} →</span>
+        </button>
+      )}
+      {owesMoney && !latestOpenInvoice && canManage && (
+        <button
+          onClick={onGenerate}
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-border py-2 text-xs font-medium text-muted-foreground hover:bg-surface"
+        >
+          <FileText className="h-3.5 w-3.5" />No statement yet — issue one
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── Settings menu (gear popover) ────────────────────────────────────────────
+
+function AccountSettingsMenu({
+  customer, canManage, onChargeWallet, onPostHouseCharge, onSetLimit, onChangeTier, onClose,
+}: {
+  customer: Customer;
+  canManage: boolean;
+  onChargeWallet: () => void;
+  onPostHouseCharge: () => void;
+  onSetLimit: () => void;
+  onChangeTier: () => void;
+  onClose: () => void;
+}) {
+  const store = useStore();
+  const canWallet = customer.wallet > 0;
+  const canHouse = customer.creditLimit > 0;
+  return (
+    <Modal open onClose={onClose} title="Account settings" description={customer.name} size="sm">
+      <div className="space-y-2">
+        <p className="text-xs font-medium text-muted-foreground mb-1">Tier</p>
+        <div className="flex flex-wrap gap-1.5">
+          {(["New", "Regular", "VIP", "Blacklisted"] as CustomerTier[]).map((t) => (
+            <button
+              key={t}
+              onClick={() => { store.updateCustomer({ ...customer, tier: t }); toast.success(`${customer.name} → ${t}`); onChangeTier(); }}
+              className={`rounded-md border px-2.5 py-1 text-xs font-semibold ${customer.tier === t ? "border-primary bg-primary/5 text-primary" : "border-border text-muted-foreground hover:bg-surface"}`}
+            >
+              {t}
+            </button>
+          ))}
+        </div>
+        {canManage && (
+          <div className="pt-3 border-t border-border space-y-1">
+            <button onClick={onSetLimit} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-surface">
+              <CreditCard className="h-4 w-4 text-muted-foreground" />Set credit limit
+              <span className="ml-auto text-xs text-muted-foreground">₦{customer.creditLimit.toLocaleString()}</span>
+            </button>
+            {/* Two focused manual-charge entries — one per account type. No mode-switch
+                inside the modal, you pick from the gear menu. */}
+            {canWallet && (
+              <button onClick={onChargeWallet} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-surface">
+                <Wallet className="h-4 w-4 text-muted-foreground" />Charge wallet
+                <span className="ml-auto text-[10px] text-muted-foreground">₦{customer.wallet.toLocaleString()} on file</span>
+              </button>
+            )}
+            {canHouse && (
+              <button onClick={onPostHouseCharge} className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-surface">
+                <Pencil className="h-4 w-4 text-muted-foreground" />Post house charge
+                <span className="ml-auto text-[10px] text-muted-foreground">₦{(customer.creditLimit - customer.credit).toLocaleString()} credit left</span>
+              </button>
+            )}
+            {!canWallet && !canHouse && (
+              <p className="px-2 py-2 text-[11px] text-muted-foreground italic">
+                No wallet or house account yet — set a credit limit or take a deposit first.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ── Order history (date-range filtered) ─────────────────────────────────────
+
+function OrderHistoryModal({ customer, orders, onClose }: { customer: Customer; orders: Order[]; onClose: () => void }) {
+  const [range, setRange] = useState<DateRange>({ start: null, end: null });
+  const filtered = useMemo(() => orders.filter((o) => inRange(o.at, range)), [orders, range]);
+  const total = filtered.reduce((s, o) => s + o.total, 0);
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Order history"
+      description={`${customer.name} · ${filtered.length} order${filtered.length === 1 ? "" : "s"} · ₦${total.toLocaleString()} total`}
+      size="lg"
+      headerExtra={<DateRangePicker value={range} onChange={setRange} />}
+    >
+      {filtered.length === 0 ? (
+        <p className="py-10 text-center text-sm text-muted-foreground">No orders in this period.</p>
+      ) : (
+        <ul className="divide-y divide-border rounded-xl border border-border max-h-[60vh] overflow-y-auto">
+          {filtered.map((o) => (
+            <li key={o.id} className="px-4 py-3">
+              <div className="flex items-baseline justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm">
+                    <span className="font-semibold">{new Date(o.at).toLocaleDateString()}</span>
+                    <span className="text-muted-foreground"> · {o.channel}{o.table && o.channel === "Dine-in" ? ` · ${o.table}` : ""}</span>
+                  </p>
+                  <p className="mt-0.5 text-xs text-foreground/70 line-clamp-1">
+                    {o.lines.map((l) => `${l.qty}× ${l.name}`).join(", ")}
+                  </p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="tabular-nums font-bold">₦{o.total.toLocaleString()}</p>
+                  <p className="text-[10px] text-muted-foreground">{o.method}</p>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Modal>
+  );
+}
+
+// ── Account history (wallet + credit ledger, date-range filtered) ──────────
+
+function AccountHistoryModal({ customer, onClose, onOpenInvoice }: { customer: Customer; onClose: () => void; onOpenInvoice: (inv: CustomerInvoice) => void }) {
+  const store = useStore();
+  const [range, setRange] = useState<DateRange>({ start: null, end: null });
+  const ledger = useMemo(
+    () => store.customerLedger
+      .filter((l) => l.customerId === customer.id && inRange(l.at, range))
+      .sort((a, b) => b.at - a.at),
+    [store.customerLedger, customer.id, range],
+  );
+  const invoices = store.customerInvoices.filter((i) => i.customerId === customer.id);
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Account history"
+      description={`${customer.name} · ${ledger.length} transaction${ledger.length === 1 ? "" : "s"}`}
+      size="lg"
+      headerExtra={<DateRangePicker value={range} onChange={setRange} />}
+    >
+      <div className="space-y-5">
+        {invoices.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Statements</p>
+            <ul className="divide-y divide-border rounded-xl border border-border">
+              {invoices.map((inv) => (
+                <li key={inv.id} className="flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-surface/40">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs font-semibold">{inv.id}</span>
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${invoiceStatusClass(inv.status)}`}>{inv.status}</span>
+                    </div>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">{inv.periodStart} → {inv.periodEnd}</p>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span className="tabular-nums font-semibold">₦{(inv.subtotal - inv.paid).toLocaleString()}</span>
+                    <button onClick={() => onOpenInvoice(inv)} className="text-xs font-medium text-primary hover:underline">Open</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Transactions</p>
+          {ledger.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">No transactions in this period.</p>
+          ) : (
+            <ul className="divide-y divide-border rounded-xl border border-border max-h-[50vh] overflow-y-auto">
+              {ledger.map((e) => <LedgerRow key={e.id} entry={e} />)}
+            </ul>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }

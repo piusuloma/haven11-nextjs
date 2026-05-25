@@ -23,14 +23,17 @@ export function Modal({
   description,
   children,
   footer,
+  headerExtra,
   size = "md",
 }: {
   open: boolean;
   onClose: () => void;
-  title: string;
+  title: ReactNode;
   description?: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** Optional control rendered just before the close button (e.g. a settings gear). */
+  headerExtra?: ReactNode;
   size?: ModalSize;
 }) {
   useEffect(() => {
@@ -64,14 +67,17 @@ export function Modal({
             <h2 className="text-base font-bold leading-tight">{title}</h2>
             {description && <p className="text-xs text-muted-foreground mt-0.5">{description}</p>}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-border hover:bg-surface transition-colors"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {headerExtra}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="grid h-8 w-8 place-items-center rounded-lg border border-border hover:bg-surface transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         <div className="p-6 overflow-y-auto">{children}</div>

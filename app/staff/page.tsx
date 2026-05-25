@@ -1,17 +1,19 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Modal, ModalButton } from "@/components/Modal";
+import { DateRangePicker, type DateRange } from "@/components/DateRangePicker";
 import { useAuth } from "@/lib/auth";
 import {
   useStore, daysUntil, complianceGap,
   type Employee, type IncidentType, type ComplianceDoc,
 } from "@/lib/store";
+import { scoreStaff, scoreBand, toPerfRange, type StaffScore } from "@/lib/performance";
 import {
   Clock, CheckCircle2, AlertTriangle, ShieldAlert, CalendarDays, UserMinus, UserPlus,
-  ChevronRight, FileCheck2, Upload, Download, FileWarning,
+  ChevronRight, FileCheck2, Upload, Download, FileWarning, Trophy, TrendingDown,
 } from "lucide-react";
 
 const ROLES = ["Cashier", "Bartender", "Server", "Head Chef", "Cook", "Storekeeper", "Operations Manager", "Rider"];
@@ -172,6 +174,8 @@ export default function Staff() {
           </ul>
         )}
       </section>
+
+      <StaffPerformanceSection branch={branch} />
 
       {creating && <NewEmployeeModal branch={branch} onClose={() => setCreating(false)} />}
       {viewing && (
@@ -746,5 +750,169 @@ function Section({ title, hint, right, children }: { title: string; hint?: strin
       </div>
       {children}
     </div>
+  );
+}
+
+// ── Staff performance — scorecards filtered by date range ──────────────────
+
+function StaffPerformanceSection({ branch }: { branch: string }) {
+  const store = useStore();
+  const [range, setRange] = useState<DateRange>({
+    // Default window: last 30 days — natural "this period" for a manager review.
+    start: new Date(Date.now() - 29 * 86400_000).toISOString().slice(0, 10),
+    end: new Date().toISOString().slice(0, 10),
+  });
+  const [roleFilter, setRoleFilter] = useState<string>("All");
+
+  const branchEmps = store.employees.filter((e) => e.branch === branch && e.status !== "Offboarded");
+
+  const scores = useMemo<StaffScore[]>(() => {
+    const r = toPerfRange(range.start, range.end);
+    return branchEmps.map((emp) => scoreStaff({
+      staff: emp,
+      orders: store.orders,
+      shifts: store.shifts,
+      wasteEntries: store.waste,
+      stockCounts: store.counts,
+      attendance: store.attendance,
+      incidents: store.disciplinary.map((d) => ({ staffId: d.employeeId, type: d.type, at: d.at })),
+      feedback: store.feedback,
+      range: r,
+    }));
+  }, [branchEmps, store.orders, store.shifts, store.waste, store.counts, store.attendance, store.disciplinary, store.feedback, range]);
+
+  const ranked = useMemo(() => {
+    const filtered = roleFilter === "All" ? scores : scores.filter((s) => s.role === roleFilter);
+    return filtered.slice().sort((a, b) => b.score - a.score);
+  }, [scores, roleFilter]);
+
+  const rolesPresent = useMemo(
+    () => ["All", ...Array.from(new Set(branchEmps.map((e) => e.role))).sort()],
+    [branchEmps],
+  );
+
+  const top = ranked[0];
+  const bottom = ranked[ranked.length - 1];
+  // Only call out the bottom performer when we have enough staff and a meaningful gap.
+  const showBottom = ranked.length >= 3 && bottom && top && (top.score - bottom.score) >= 20;
+
+  return (
+    <section className="space-y-3">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <Trophy className="h-4 w-4 text-muted-foreground" />Staff performance
+          </h2>
+          <p className="text-xs text-muted-foreground">Scored on sales, integrity, waste, punctuality, behaviour &amp; customer feedback — weighted by role.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className="rounded-md border border-border bg-card px-2 py-1.5 text-xs font-medium">
+            {rolesPresent.map((r) => <option key={r}>{r}</option>)}
+          </select>
+          <DateRangePicker value={range} onChange={setRange} />
+        </div>
+      </div>
+
+      {ranked.length === 0 ? (
+        <p className="rounded-2xl border border-border bg-card p-10 text-center text-sm text-muted-foreground">No active staff at this branch.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {top && <PerfHeadline icon={Trophy} label="Top performer" name={top.staffName} role={top.role} score={top.score} tone="primary" />}
+            {showBottom
+              ? <PerfHeadline icon={TrendingDown} label="Needs support" name={bottom.staffName} role={bottom.role} score={bottom.score} tone="warning" />
+              : <div className="rounded-2xl border border-dashed border-border bg-surface/30 p-4 text-center text-xs text-muted-foreground">
+                  No one falling behind in this window.
+                </div>}
+          </div>
+
+          <ul className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+            {ranked.map((s, idx) => <StaffScoreCard key={s.staffId} rank={idx + 1} score={s} />)}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+function PerfHeadline({ icon: Icon, label, name, role, score, tone }: { icon: React.ComponentType<{ className?: string }>; label: string; name: string; role: string; score: number; tone: "primary" | "warning" }) {
+  const t = tone === "primary"
+    ? "border-primary/30 bg-primary/5 text-primary"
+    : "border-warning/30 bg-warning/10 text-warning";
+  return (
+    <div className={`rounded-2xl border-2 p-4 ${t}`}>
+      <div className="flex items-center gap-3">
+        <span className="grid h-10 w-10 place-items-center rounded-full bg-card"><Icon className="h-5 w-5" /></span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wider">{label}</p>
+          <p className="font-semibold truncate text-foreground">{name}</p>
+          <p className="text-[11px] text-muted-foreground capitalize">{role}</p>
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-3xl font-bold tabular-nums text-foreground">{score}</p>
+          <p className="text-[10px] text-muted-foreground">/ 100</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StaffScoreCard({ rank, score }: { rank: number; score: StaffScore }) {
+  const band = scoreBand(score.score);
+  return (
+    <li className="rounded-2xl border border-border bg-card p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="grid h-8 w-8 place-items-center rounded-full bg-surface text-xs font-bold tabular-nums">#{rank}</span>
+          <div className="min-w-0">
+            <p className="font-semibold truncate">{score.staffName}</p>
+            <p className="text-[11px] text-muted-foreground capitalize">{score.role}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${band.tone}`}>{band.label}</span>
+          <p className="text-2xl font-bold tabular-nums">{score.score}</p>
+        </div>
+      </div>
+      <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+        {(score.role === "cashier" || score.role === "bartender") && (
+          <>
+            <PerfMetric label="Sales" value={`₦${(score.sales / 1000).toFixed(0)}k`} />
+            <PerfMetric label="Orders" value={String(score.orderCount)} />
+            <PerfMetric label="Avg ticket" value={`₦${score.avgTicket.toLocaleString()}`} />
+            <PerfMetric label="Voids" value={`${score.voidCount} (${Math.round(score.voidRate * 100)}%)`} tone={score.voidRate > 0.05 ? "warning" : undefined} />
+          </>
+        )}
+        {score.role === "bartender" && (
+          <>
+            <PerfMetric label="Over-pours" value={String(score.overPourCount)} tone={score.overPourCount > 0 ? "danger" : undefined} />
+            <PerfMetric label="Variance ₦" value={`₦${score.varianceCost.toLocaleString()}`} tone={score.varianceCost > 0 ? "warning" : undefined} />
+          </>
+        )}
+        {score.role === "kitchen" && (
+          <>
+            <PerfMetric label="Tickets" value={String(score.ticketsCompleted)} />
+            <PerfMetric label="Waste ₦" value={`₦${score.wasteCost.toLocaleString()}`} tone={score.wasteCost > 0 ? "warning" : undefined} />
+          </>
+        )}
+        {score.role === "storekeeper" && (
+          <>
+            <PerfMetric label="Variance ₦" value={`₦${score.varianceCost.toLocaleString()}`} tone={score.varianceCost > 0 ? "warning" : undefined} />
+            <PerfMetric label="Waste ₦" value={`₦${score.wasteCost.toLocaleString()}`} />
+          </>
+        )}
+        <PerfMetric label="Days present" value={String(score.daysPresent)} />
+        <PerfMetric label="Late marks" value={String(score.daysLate)} tone={score.daysLate > 0 ? "warning" : undefined} />
+      </dl>
+    </li>
+  );
+}
+
+function PerfMetric({ label, value, tone }: { label: string; value: string; tone?: "warning" | "danger" }) {
+  return (
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className={`text-right tabular-nums font-medium ${tone === "danger" ? "text-destructive" : tone === "warning" ? "text-warning" : ""}`}>{value}</dd>
+    </>
   );
 }

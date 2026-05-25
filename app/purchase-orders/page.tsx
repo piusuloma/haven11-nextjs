@@ -5,8 +5,8 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/AppShell";
 import { Modal, ModalButton } from "@/components/Modal";
 import { useAuth } from "@/lib/auth";
-import { useStore, fmtQty, HUB_ID, type PurchaseOrder, type POStatus } from "@/lib/store";
-import { Plus, Trash2, PackageCheck, TrendingUp, Eye, EyeOff } from "lucide-react";
+import { useStore, fmtQty, priceForQty, HUB_ID, type PurchaseOrder, type POStatus } from "@/lib/store";
+import { Plus, Trash2, PackageCheck, TrendingUp, Eye, EyeOff, Sparkles } from "lucide-react";
 
 const statusClass: Record<POStatus, string> = {
   "Pending Approval": "bg-warning/15 text-foreground",
@@ -214,16 +214,49 @@ function NewPOModal({ onClose }: { onClose: () => void }) {
     setRows((prev) => prev.map((r, idx) => {
       if (idx !== i) return r;
       const next = { ...r, [key]: val };
-      // Prefill the cost from the product catalogue when an item is picked.
-      if (key === "sku" && !r.cost) {
-        const prod = store.products.find((p) => p.sku === val);
-        if (prod) next.cost = String(prod.cost);
+      const sku = key === "sku" ? val : next.sku;
+      const qty = key === "qty"
+        ? Number(val) || 0
+        : Number(next.qty) || 0;
+      // Vendor-tier autofill: if there's a price tier for this vendor-SKU pair
+      // at the entered quantity, snap the cost to the tier (industry standard:
+      // bulk buyers pay the tier price automatically). Manual edits to the
+      // cost field still win (user might be negotiating a one-off price).
+      if (key === "sku" || key === "qty") {
+        const tier = priceForQty(store.vendorPricing, vendorId, sku, qty);
+        if (tier.unitCost != null) {
+          // Only auto-set when the cost field is empty OR matches the previously-active tier.
+          if (key === "sku") {
+            next.cost = String(tier.unitCost);
+          } else if (key === "qty") {
+            // On qty change, always snap to the new tier (the operator can override after).
+            next.cost = String(tier.unitCost);
+          }
+        } else if (key === "sku" && !r.cost) {
+          // Fall back to catalogue cost when there's no tiered price on file.
+          const prod = store.products.find((p) => p.sku === sku);
+          if (prod) next.cost = String(prod.cost);
+        }
       }
       return next;
     }));
   }
 
   const total = rows.reduce((s, r) => s + (Number(r.qty) || 0) * (Number(r.cost) || 0), 0);
+
+  // Compute total savings vs the lowest-tier-1 price for visibility.
+  const savings = rows.reduce((s, r) => {
+    const qty = Number(r.qty) || 0;
+    const cost = Number(r.cost) || 0;
+    if (qty === 0 || cost === 0) return s;
+    const tier = priceForQty(store.vendorPricing, vendorId, r.sku, qty);
+    if (!tier.activeTier) return s;
+    // Compare against tier-1 (smallest minQty).
+    const pricing = store.vendorPricing.find((p) => p.vendorId === vendorId && p.sku === r.sku);
+    if (!pricing || pricing.tiers.length < 2) return s;
+    const baseUnit = pricing.tiers.reduce((min, t) => t.minQty < min.minQty ? t : min, pricing.tiers[0]).unitCost;
+    return s + Math.max(0, (baseUnit - cost)) * qty;
+  }, 0);
 
   function submit() {
     if (!vendorId) { toast.error("Pick a vendor"); return; }
@@ -272,29 +305,57 @@ function NewPOModal({ onClose }: { onClose: () => void }) {
         <div>
           <p className="text-xs font-medium text-muted-foreground mb-2">Line items</p>
           <div className="space-y-2">
-            {rows.map((r, i) => (
-              <div key={i} className="flex gap-2">
-                <select value={r.sku} onChange={(e) => update(i, "sku", e.target.value)} className={`${inputCls} flex-1`}>
-                  {store.products.map((p) => <option key={p.sku} value={p.sku}>{p.name}</option>)}
-                </select>
-                <input value={r.qty} onChange={(e) => update(i, "qty", e.target.value)} type="number" placeholder="Qty" className={`${inputCls} w-20`} />
-                <input value={r.cost} onChange={(e) => update(i, "cost", e.target.value)} type="number" placeholder="₦ cost" className={`${inputCls} w-28`} />
-                {rows.length > 1 && (
-                  <button onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))} aria-label="Remove" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border text-muted-foreground hover:text-destructive hover:bg-destructive/10">
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                )}
-              </div>
-            ))}
+            {rows.map((r, i) => {
+              const qty = Number(r.qty) || 0;
+              // Active tier + next tier for this row — drives the hint below.
+              const tier = qty > 0 ? priceForQty(store.vendorPricing, vendorId, r.sku, qty) : null;
+              return (
+                <div key={i} className="space-y-1">
+                  <div className="flex gap-2">
+                    <select value={r.sku} onChange={(e) => update(i, "sku", e.target.value)} className={`${inputCls} flex-1`}>
+                      {store.products.map((p) => <option key={p.sku} value={p.sku}>{p.name}</option>)}
+                    </select>
+                    <input value={r.qty} onChange={(e) => update(i, "qty", e.target.value)} type="number" placeholder="Qty" className={`${inputCls} w-20`} />
+                    <input value={r.cost} onChange={(e) => update(i, "cost", e.target.value)} type="number" placeholder="₦ cost" className={`${inputCls} w-28`} />
+                    {rows.length > 1 && (
+                      <button onClick={() => setRows((prev) => prev.filter((_, idx) => idx !== i))} aria-label="Remove" className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border text-muted-foreground hover:text-destructive hover:bg-destructive/10">
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                  {/* Bulk-pricing hint — "Add N more to drop to ₦X/unit" */}
+                  {tier?.nextTier && qty > 0 && tier.activeTier && (
+                    <p className="ml-1 inline-flex items-center gap-1 text-[11px] text-warning">
+                      <Sparkles className="h-3 w-3" />
+                      Add <span className="font-semibold">{tier.nextTier.minQty - qty}</span> more to drop to <span className="font-semibold tabular-nums">₦{tier.nextTier.unitCost.toLocaleString()}/unit</span>
+                      <span className="text-muted-foreground">· save ₦{((tier.activeTier.unitCost - tier.nextTier.unitCost) * tier.nextTier.minQty).toLocaleString()} at that tier</span>
+                    </p>
+                  )}
+                  {tier?.activeTier && !tier.nextTier && qty > 0 && tier.unitCost != null && (
+                    <p className="ml-1 inline-flex items-center gap-1 text-[11px] text-primary">
+                      <Sparkles className="h-3 w-3" />Best price tier · ₦{tier.activeTier.unitCost.toLocaleString()}/unit
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <button onClick={() => setRows((prev) => [...prev, { sku: store.products[0]?.sku ?? "", qty: "", cost: "" }])} className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-primary hover:underline">
             <Plus className="h-3.5 w-3.5" />Add line item
           </button>
         </div>
 
-        <div className="rounded-xl bg-surface/60 border border-border p-3 flex justify-between text-sm">
-          <span className="text-muted-foreground">PO total</span>
-          <span className="font-bold tabular-nums">₦{total.toLocaleString()}</span>
+        <div className="rounded-xl bg-surface/60 border border-border p-3 space-y-1 text-sm">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">PO total</span>
+            <span className="font-bold tabular-nums">₦{total.toLocaleString()}</span>
+          </div>
+          {savings > 0 && (
+            <div className="flex justify-between text-[11px] text-primary">
+              <span className="inline-flex items-center gap-1"><Sparkles className="h-3 w-3" />Bulk-buy savings on this order</span>
+              <span className="font-semibold tabular-nums">−₦{savings.toLocaleString()}</span>
+            </div>
+          )}
         </div>
       </div>
     </Modal>

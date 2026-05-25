@@ -8,7 +8,7 @@ import { useAuth } from "@/lib/auth";
 import { useStore, type AuditCategory, type AuditEntry } from "@/lib/store";
 import { Download, ShieldCheck, Search, Lock } from "lucide-react";
 
-const CATEGORIES: AuditCategory[] = ["Sales", "Inventory", "Transfers", "Procurement", "Finance", "Payroll", "HR"];
+const CATEGORIES: AuditCategory[] = ["Sales", "Inventory", "Transfers", "Procurement", "Finance", "Payroll", "HR", "Security"];
 
 const CAT: Record<AuditCategory, string> = {
   Sales:       "bg-primary/10 text-primary",
@@ -18,6 +18,7 @@ const CAT: Record<AuditCategory, string> = {
   Finance:     "bg-emerald-100 text-emerald-700",
   Payroll:     "bg-rose-100 text-rose-700",
   HR:          "bg-slate-100 text-slate-700",
+  Security:    "bg-orange-100 text-orange-700",
 };
 
 function dayLabel(iso: string): string {

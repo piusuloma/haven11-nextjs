@@ -46,8 +46,13 @@ export default function Expenses() {
   const store = useStore();
   const { user } = useAuth();
   const me = user?.name ?? "You";
-  // Petty cash is approved by the Accountant (the Owner may also approve).
-  const canApprove = user?.role === "accountant" || user?.role === "owner";
+  // Three separate authorities — collapsed into the wrong "anyone in the page"
+  // before. Cashiers can request; only the cash custodian (Accountant / Owner)
+  // approves, disburses, or tops up the float. Reconciliation falls to the
+  // original requester (who has the receipt) or the cash custodian.
+  const canApprove   = user?.role === "accountant" || user?.role === "owner";
+  const canDisburse  = user?.role === "accountant" || user?.role === "owner";
+  const canTopUpFloat = user?.role === "accountant" || user?.role === "owner";
 
   const [creating, setCreating] = useState(false);
   const [reconciling, setReconciling] = useState<ExpenseRequest | null>(null);
@@ -101,12 +106,14 @@ export default function Expenses() {
             </div>
             <div className="flex items-center gap-4">
               <p className="text-2xl font-bold tabular-nums">₦{wallet.balance.toLocaleString()}</p>
-              <button
-                onClick={() => setToppingUp(true)}
-                className="rounded-xl border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
-              >
-                Request top-up
-              </button>
+              {canTopUpFloat && (
+                <button
+                  onClick={() => setToppingUp(true)}
+                  className="rounded-xl border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
+                >
+                  Top up float
+                </button>
+              )}
             </div>
           </div>
           <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-surface">
@@ -182,10 +189,14 @@ export default function Expenses() {
                   ) : (
                     <span className="text-xs text-muted-foreground">Awaiting Accountant approval</span>
                   ))}
-                  {e.status === "Approved" && (
+                  {e.status === "Approved" && (canDisburse ? (
                     <button onClick={() => disburse(e)} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">Disburse cash</button>
-                  )}
-                  {e.status === "Disbursed" && (
+                  ) : (
+                    <span className="text-xs text-muted-foreground italic">Awaiting Accountant disbursement</span>
+                  ))}
+                  {/* Reconciliation falls to the original requester (who has the receipt)
+                      or the cash custodian. No-one else needs this button. */}
+                  {e.status === "Disbursed" && (e.requestedBy === me || canDisburse) && (
                     <button onClick={() => setReconciling(e)} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
                       <Receipt className="h-3.5 w-3.5" />Reconcile &amp; return change
                     </button>

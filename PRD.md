@@ -2,7 +2,8 @@
 
 **Product:** NativeID ROS (Restaurant Operating System)
 **Internal codename:** Haven 11 / 702 ROS
-**Document version:** 1.12
+**Document version:** 1.23
+**Last updated:** 2026-05-24
 **Status:** Living document — describes the current prototype and the target product
 **Last updated:** 2026-05-23
 **Owner:** Product
@@ -34,6 +35,17 @@
 | 1.10 | 2026-05-23 | **Categories are now manageable at runtime.** Promoted from a hardcoded `const` to `state.inventoryCategories` with `addCategory` / `renameCategory` / `removeCategory` actions (rename cascades to every product; delete blocked while in use). A focused **Manage categories** modal is reached from two unobtrusive entry points — the inventory **Filter popover footer** and a `Manage…` link beside the Category dropdown in the **New product** dialog — both owner/manager-gated. No new nav item. See FR-INV-14. Schema bump (`v18`). |
 | 1.11 | 2026-05-23 | **Transfer actions are now context-aware.** Approve / Reject / Issue only render when the viewer is currently in the **source** branch (the Strong Room for branch requests); the destination side sees an italic status hint instead of action buttons. This prevents a branch from rejecting (or approving, or issuing) its own request. Receive remains the destination-side action; Receipt is visible to both. See FR-TRF-6. |
 | 1.12 | 2026-05-23 | **Strong Room transfer-request modal upgraded to the multi-select picker** — same UX as the internal stock-request picker (search, category chips, tick-and-qty, grouped list, *"Tick all visible"*, live ready/total counts). Each row shows live Strong Room availability so the requester knows what's actually in stock. Same seamless flow for a 50-item request as for an internal sub-store request. See FR-TRF-2. |
+| 1.13 | 2026-05-23 | **Customer accounts — wallet + house tab + statements.** Two-ledger model on every `Customer` (prepaid `wallet`, A/R `credit` capped by `creditLimit`), append-only `CustomerLedgerEntry`, statement generation (`CustomerInvoice` with auto-numbered IDs and reminder log), and the full A/R workflow on `/customers` — KPIs, aging buckets, tabbed customer 360 with Account section, top-up / charge / payment / statement modals, browser-printable invoices with a 5-step reminder cadence. Hotel/PMS-style separation of liability vs. receivable. POS payment chips queued for Phase 2 (data model already ready). See §25. Schema bump (`v19`). |
+| 1.14 | 2026-05-23 | **UX simplification + RBAC tightening pass.** *"One click, one task"* principle applied throughout. (a) **Customer 360 rewritten** — no more tabs, no dual-mode toggles. Single-screen layout, *Last order* card front-and-centre, ONE plain-language balance card (*"Has money on file"* / *"Owes you"*) with one primary CTA, big *Order history* / *Account history* buttons, advanced actions (manual charge, credit limit, tier) hidden behind a gear-icon menu. (b) **Inventory `AdjustModal` split** into two single-task modals (`ReceiveStockModal`, `StockCountModal`); row link is now *Receive · Count* — two distinct verbs, no in-modal mode switch. (c) **Reusable `DateRangePicker`** (preset chips + custom range) applied to *Order history* and *Account history*. (d) **Expense disburse / top-up role-gated** — cashier can request petty cash but only Accountant / Owner can disburse cash or top up the wallet float; reconciliation restricted to the original requester or the cash custodian. (e) **Transfer approve/reject now role-gated AND branch-gated** — owner/manager AND at source. Storekeeper at the Strong Room can still *Issue* but sees "Awaiting management approval" instead of approve/reject. Closes the *"cashier can disburse"* and *"manager dashboard still sees reject"* loops. |
+| 1.15 | 2026-05-23 | **Suggested restock — manager-in-the-loop auto-replenishment.** Toast / Lightspeed pattern. New `suggestedRestockQty(item)` helper (Toast/NRA rule of thumb: target = `reorder × 2`, capped at source availability, rounded to a sensible step). When a branch Main Store or sub-store has items below par, the inventory page shows an amber banner — *"3 items running low — restock from Strong Room?"* — that opens the existing multi-select request picker with the low items pre-ticked and quantities pre-filled. The user reviews, adjusts, submits; the existing approval / issue / receive flow runs unchanged. The `NewTransferModal` was extracted to `components/` so both `/transfers` (manual) and `/inventory` (suggested) share it; both modals now accept a `prefill` prop. **System suggests, human submits** — no silent auto-orders. See FR-RPL. |
+| 1.16 | 2026-05-23 | **Performance measurement — staff scorecards + manager scorecards.** New `lib/performance.ts` pure-functions module computes role-weighted scorecards (`scoreStaff`, `scoreBranch`). `/staff` page gains a *Staff performance* section with date-range filter, role filter, top-performer / needs-support headlines, and per-staff cards showing role-relevant metrics (sales · voids · over-pours · waste · attendance · feedback). `/reports` page gains an *owner-only* **Manager scorecards** section ranking branches on revenue · integrity · waste · customer mood · complaints. Industry KPI weighting (Toast / NRA / Lightspeed). Date range powered by the reusable `DateRangePicker`. |
+| 1.17 | 2026-05-23 | **Rider 360, bike P&L, customer-aware delivery flow, settings/floor-plan management, full-product audit (§26).** (a) `Rider` extended with phone, next-of-kin, licence, bike plate / make / acquisition cost; new `FleetTxn` append-only ledger; on `completeDelivery` the fee auto-credits the rider's bike P&L; new `RiderModal` shows identity + Income / Outflow / Net P&L cards + delivery KPIs (on-time rate, avg duration) + ledger feed with a date-range filter. (b) `Customer` extended with `address` + `addressLandmark`; **POS Takeout/Delivery modal rewritten** with phone-first lookup, live CRM suggestions, "Returning customer" pill with tier + lifetime stats + last address, and writes a new address back to the CRM on submit — a fresh cashier never has to ask a regular for their address. (c) New `/settings` page (owner/manager) with **table floor-plan management** (add / rename / change seats / delete, blocked while occupied, grouped by zone). (d) PRD **§26 — Whole-product audit and onboarding roadmap** documents every gap surfaced and the phased close. Schema bump (`v20`). |
+| 1.18 | 2026-05-24 | **Payroll itemisation + Staff welfare module.** (a) **Payslip schema** rewritten — every non-statutory line is now an itemised `PayslipAdjustment` carrying *category + reason + amount* (e.g. *"Performance bonus · Hit November sales target (110% of plan) · +₦25,000"*). New `PayrollAdjustment` queue lets a manager add bonuses or deductions **between runs** with reasons that print on the payslip. **`runPayroll`** auto-generates lines from lateness, cash shortages, and welfare-advance instalments — each with the source noted, so an auditor / employee always knows *why* their pay changed. Adjustments are auto-marked consumed when a run uses them. (b) **New `/welfare` page + module** for staff support (medical, bereavement, family emergency, education, wedding, **loan / salary advance**, gift, other). Lifecycle: Pending → Approved → Disbursed → Closed / Repaying → Closed; rejection captures a reason. **Salary advances feed into payroll** — each run auto-deducts the next instalment with the labelled line *"Welfare advance · Instalment N of M · {id} · {category}"*, and the welfare record auto-closes when fully repaid. Role gates: HR / Manager / Owner approve; Accountant / Owner / Manager disburse. Audit-logged under **HR**. See FR-PAY-2 / FR-WEL. Schema bump (`v21`). |
+| 1.19 | 2026-05-24 | **POS start screen — service-type chooser; small plain-English pass.** The Front-of-House start screen now leads with **three equal tiles** — **Dine in · Takeout · Delivery** (Toast / Square / Lightspeed pattern). Picking *Dine in* expands into the table floor plan with a *Back to service type* link; *Takeout* / *Delivery* open the existing customer-capture modal directly. **Open tabs** sit above the chooser regardless of mode. Plain-English pass on the highest-friction jargon: rider P&L now reads **Money in / Money out / Profit**; payslip statutory deductions are now **Income tax (PAYE 8%)**, **Pension contribution (8%)**, **Housing fund (NHF 2.5%)** under a *"what the law takes"* subheader; the welfare *repayable advance* checkbox is now plainly **"Pay it back from salary?"**. Self-audit acknowledging the remaining jargon (*Strong Room, A/R aging, Pour cost, Reorder point*) is listed in §26.6 as a follow-up. |
+| 1.20 | 2026-05-24 | **Nav grouping · ready-ticket notifications · financials · two-button-switcher cleanup · cashier RBAC.** (a) **Sidebar restructured into labelled sections** (`Operate · Inventory · People · Money · Grow · System`) for owner / manager / accountant / hr / storekeeper — Toast / Square / Lightspeed pattern, no flat 21-item list. Labels renamed for clarity (*Front of House on Shift → Shifts*, *Stock Transfers → Transfers*, *HR Dashboard → HR*, *Staff Welfare → Welfare*, *Inventory → Stock*, *Alerts & Security → Alerts*, *Expenses → Petty cash* for cashier). (b) **Kitchen → waiter notification**: new *Ready to serve* strip on `/cashier-home` with each ready ticket + a *Served* button; same items surface in the global notification bell (Toast pattern). (c) **Financials** — new `lib/financials.ts` + `/financials` page (owner / manager / accountant) with **Profit & Loss** (date-range) and **Balance Sheet** (snapshot). Every line leads with plain English (*"Money customers paid us"*) and parenthesises the accounting term (*"Revenue"*). (d) **Three two-button mode-switchers eliminated**: AddRiderModal → split into `HireInternalRiderModal` + `Add3PLPartnerModal` (two separate buttons on `/dispatch`); PostChargeModal → split into `ChargeWalletModal` + `PostHouseChargeModal` (two entries on the customer 360 gear menu, only the relevant one shown); DiscountModal `% / ₦` toggle → **two side-by-side fields that cross-update** (edit either, both stay in sync). (e) **Cashier RBAC** tightened: `/dispatch` removed from cashier nav (they assign/complete deliveries from elsewhere); fleet-management actions (Hire rider, Add 3PL, Log expense, Settle COD) gated to owner/manager/storekeeper; Log fuel/repair hidden in the Rider 360 modal for non-fleet roles. (f) **POS split-payment** discoverability — header now reads *"Add another payment"* on second entry with "₦X still to collect" hint, clearer than the previous static *"Add Cash payment"* label. (g) **`/customers` cleaned up** — Complaints & feedback and Marketing & retention sections are now `<details>` blocks closed by default with status pills (e.g. *"2 open"* / *"5 lapsed"*) so the page lands on the operational view (customers + AR). |
+| 1.21 | 2026-05-24 | **Industry-grade Financials · shift-close inventory count · login audit · inventory column reorder.** (a) **Financials dashboard rebuilt** for "run your business without an accountant" usability. Three big headline cards (**You made · You spent · You kept**) with Δ% vs prior period. Below them, **four restaurant health bars** (Food cost · Drink cost · Staff cost · Prime cost) coloured by NRA / Toast industry targets — green/amber/red bands and target ranges shown. Three tabs: **Profit & Loss** with revenue split by stream (food / drink / other) and full operating breakdown; **Balance Sheet** with current vs fixed assets, liabilities, owner's equity; **Cash flow** in vs out. Every line leads with plain English and parenthesises the accounting term. (b) **Kitchen / Bar shift-close inventory count** — new `ShiftCloseCountModal` (Toast / Lightspeed / MarketMan pattern) listing the station's high-value items (Spirits / Wine / Protein / anything ≥ ₦2k cost) with per-row count inputs, live variance preview, *Show everything* toggle. Triggered by a *Closing count* button on `/kitchen-home` and `/bar-home`. Variance flags as over-pour / shrinkage in `/alerts`. (c) **Login audit trail** — new `Security` audit category. Every successful sign-in lands on `/audit` with the role + actor + branch + timestamp; failed PIN attempts also log (warning severity after 3 in a session) — PCI-DSS-style. (d) **Inventory table column reorder** — Item now leads (with the clickable category badge), SKU moved to penultimate column (it's a system ID, not what staff scan for). Matches Toast / Square / Lightspeed column order. |
+| 1.22 | 2026-05-24 | **Dispatch slim-down · vendor bulk-buy pricing · line filter on stock pickers.** (a) **`/dispatch` decluttered.** Active-delivery cards now lead with the address (the one thing dispatchers scan for) and bundle phone / COD / fee / time / rider into a muted footer. Rider grid replaced with a **compact list strip** — one row per rider with avatar, name, status dot, plate/phone, today's delivery count, COD-held chip with inline *Settle*, and clock-in/out + *Open* actions. P&L / fee revenue / ledger detail moved out of the index and into the Rider 360 modal where it belongs. (b) **Vendor bulk-buy pricing** (Toast / Lightspeed / MarketMan / xtraCHEF pattern). New `VendorPriceTier` + `VendorSkuPricing` types; pure-function `priceForQty(vendor, sku, qty)` resolves the active tier. The **PO modal** auto-fills unit cost from the applicable tier when SKU or quantity changes, shows a yellow *"Add N more to drop to ₦X/unit"* hint with savings preview, and footer-totals the *Bulk-buy savings* on the order. Seeded tiered pricing on Rice (₦2,400 → 2,200 → 2,000), Goat Meat, and Heineken so the flow is testable on first load. Manual cost edits still win for one-off negotiations. **Storekeeper-managed UI for editing tiers on `/vendors` is deferred to next iteration** — model + mutations are ready. Schema bump (`v22`). (c) **Line filter on `StockRequestModal` and `NewTransferModal`** — a *Section* chip strip (Kitchen / Bar / Juice Bar / Lounge), pre-set to the caller's station (bartender at `/bar-home` → opens with **Bar** selected; same for kitchen and juice bar). Only sections actually present in the source store are shown as chips. Strip hides entirely when only one section exists. |
+| 1.23 | 2026-05-24 | **Always-on "Request from Strong Room" button on branch Main Store tabs.** Previously the only path from `/inventory` to the transfer-request flow was the amber **Suggest restock** banner, which only appeared when items had already dipped below par. That left a gap for *proactive* restocking — topping up before a busy weekend, or for the storekeeper who knows what they need without waiting for the system to flag it. The toolbar now carries a primary **⇄ Request from Strong Room** button on the Main Store tab of any branch (hidden at the Strong Room itself, hidden on sub-store tabs where the internal-stock-request button already covers it). Clicking it opens the existing `NewTransferModal` with no prefill — the operator picks their items from the full Strong Room catalogue (with the new Section / Category chip filters for fast narrowing). *New product* moves to a secondary-styled button next to it (admin-tier, not a daily task). |
 
 > **Note on accuracy.** This PRD is reverse-engineered from the working prototype. Where the prototype simulates a behaviour that production must implement properly (e.g. authentication, persistence), the requirement is written for the *target product* and the prototype's shortcut is called out in §15 (Current state) and §16 (Path to production).
 
@@ -330,7 +342,7 @@ Lightweight landing pages for operational roles.
 
 > **Renamed in v1.1.** Formerly "Point of Sale (POS)" — renamed to **Front of House (FOH)** because "POS" is widely read as the physical card/payment terminal, which confused users. The order-taking screen is labelled Front of House; the route stays `/pos`.
 
-- **FR-POS-1 — Service selection:** start a **Dine-in** order by tapping an available table on the zoned floor plan (Indoor/Terrace/Bar), or a **Takeout** / **Delivery** order via CTA cards. Occupied/reserved tables are not selectable.
+- **FR-POS-1 — Service-type chooser:** the start screen presents **three equal tiles — Dine in · Takeout · Delivery** (Toast / Square / Lightspeed pattern). Picking **Dine in** expands into the **zoned floor plan** (Indoor / Terrace / Bar) with a *Back to service type* link; tapping any available table starts a seating flow (occupied / reserved tables are not selectable). Picking **Takeout** or **Delivery** opens the customer-capture modal directly. The Dine-in tile shows live `available · seated` counts to scan branch capacity at a glance without expanding the floor plan. **Open tabs** sit above the chooser regardless of mode — they're always actionable.
 - **FR-POS-2 — Seat guests:** seating a table captures guest count (bounded by table capacity) and marks the table occupied.
 - **FR-POS-3 — Service forms:** Takeout captures customer name, phone, pickup time (ASAP / 15 min / 30 min / 1 hr); Delivery captures name, phone, address, and a delivery fee (default ₦1,500).
 - **FR-POS-4 — Menu & cart:** category-tabbed menu grid (Available items only); tapping an item adds/increments a cart line; per-line quantity ± and delete; sticky cart sidebar shows order label and context.
@@ -384,6 +396,14 @@ Lightweight landing pages for operational roles.
 - **FR-INV-12 — Internal stock requests:** the Kitchen, Bar and Juice Bar **request stock from the branch Main Store**; the request is **issued** from the Main Store, moving stock into the requesting sub-store. Front-of-House sales then deduct each recipe ingredient from the sub-store matching its line. The request modal is a **multi-select picker** — the operator sees the Main Store as a single scrollable list grouped by category, with a search box, category chips, a "tick all visible" bulk action, and a per-row checkbox + qty input. Built for 50+-item requests in one screen, not row-by-row.
 - **FR-INV-13 — Categories:** every product carries a **category** (Protein, Produce, Grains, Spices, Oils & Fats, Dairy, Beer, Spirits, Wine, Mixers, Hot Drinks, Soft Drinks, Cleaning, Other). The Inventory list shows the category as a clickable badge in the Item cell (click to filter), exposes Category as a chip filter alongside Line and Status, and the free-text search matches name, SKU **and** category — so typing "spice" surfaces all spices, "protein" surfaces all proteins. The stock-request picker groups by the same category vocabulary. CSV import/export carries a `Category` column (an unknown value coerces to "Other" rather than crashing the import).
 - **FR-INV-14 — Category management (owner/manager):** the category vocabulary lives in `state.inventoryCategories`, not as a hardcoded constant, and is curated through a focused **Manage categories** modal — add, rename, delete in one list with per-category product counts. **Rename cascades** to every stock row using that category. **Delete is blocked** while a category is in use (counter > 0); the operator must reassign products to another category first. The modal is reached from **two unobtrusive entry points** — a `Manage categories →` link in the inventory Filter popover footer, and a `Manage…` link beside the Category dropdown in the **New product** dialog (the Linear/Notion pattern: no new nav item, manage from where you'd create). Cashier, kitchen, bartender, storekeeper, accountant and HR see the categories but cannot edit them. Seeded with the 14 defaults from FR-INV-13.
+- **FR-RPL — Suggested restock (manager-in-the-loop auto-replenishment):**
+  - **Trigger:** any item with `onHand ≤ reorder` (the par level) at the active location.
+  - **Suggested quantity:** `target − onHand` where `target = reorder × 2` — the Toast / National Restaurant Association rule of thumb that stocks up to 2× par so the next cycle has buffer. Rounded up to a sensible step (1 for discrete units like pcs/btl/bunch; 0.1 for continuous units like kg/L). Capped at source availability — never suggest more than the source actually has on hand.
+  - **Source of restock:** a branch Main Store restocks from the Strong Room (via `/transfers` waybill flow). A sub-store (Kitchen / Bar / Juice Bar) restocks from its own branch Main Store (via the internal stock-request flow).
+  - **UX:** when low items exist at the active location, an amber banner on the inventory page reads *"N items running low — restock from {source}?"* and lists the first few. Clicking opens the existing multi-select picker (FR-INV-12 / FR-TRF-2) with the low items already ticked and quantities pre-filled. The operator can edit anything before submitting; submission goes through the normal approval flow (FR-TRF-3 management approval for hub→branch; the Main Store storekeeper issues for sub-stores).
+  - **Industry positioning:** *suggest, never auto-submit.* Restaurant inventory has too much context (events, weather, holidays) for unattended ordering — manager-in-the-loop is the universal pattern across Toast, Lightspeed, Square for Restaurants, and Olo. The system does the math; the human does the judgement.
+  - **Roles:** the banner is visible to anyone who can see the inventory page (owner / manager / storekeeper). Submission then follows the same role gates as a manual request.
+  - **Implementation:** pure helper `suggestedRestockQty(item)`; the shared `NewTransferModal` and `StockRequestModal` both accept a `prefill: { sku, qty }[]` prop that pre-ticks the picker.
 
 ### 11.9 Stock Transfers (`/transfers`)
 **Users:** owner, manager, storekeeper. **Purpose:** govern hub→branch stock movement.
@@ -457,16 +477,31 @@ Lightweight landing pages for operational roles.
 - **FR-HR-10 — Weekly schedule:** each employee has a 7-day schedule (Mon–Sun) where each day is assigned a shift period — **Off**, **Full day**, **1st shift**, **2nd shift**, or **3rd shift**. The editor uses **per-day chip pickers with quick-fill presets** (Mon–Fri 1st shift, Mon–Sat Full day, etc.), colour-coded by shift, and a working-days summary — modeled on Deputy / When I Work. Rolled up into the HR Dashboard roster.
 
 ### 11.15 Payroll (`/payroll`)
-**Users:** owner, manager.
+**Users:** owner, manager, hr.
 
-- **FR-PAY-1** KPI tiles: On payroll, Monthly gross, Last run net, Payroll runs count.
-- **FR-PAY-2** **Run payroll** for a named period — generates a `Payslip` for every active employee at the branch.
-- **FR-PAY-3** Payslip computation: Gross = base + transport + housing; minus PAYE 8% of gross, Pension 8% of base, NHF 2.5% of base; minus lateness deduction (₦500 × late marks); minus cash-shortage deduction carried from negative shift variances under that employee's name.
-- **FR-PAY-4** **Payslip view** with full earnings/deductions breakdown and **print**.
-- **FR-PAY-5** **Export bank schedule** as CSV (employee, role, gross, deductions, net).
+- **FR-PAY-1** KPI tiles: On payroll, Monthly gross, **Pending bonus / deductions** (sums + count), Last run net.
+- **FR-PAY-2** **Run payroll** for a named period — generates a `Payslip` for every active employee at the branch with three sources of lines:
+  1. **Statutory** (always present): PAYE 8% of gross, Pension 8% of base, NHF 2.5% of base.
+  2. **Auto-generated itemised** lines (each with a written `reason`): lateness (₦500 × late marks, listing how many days), cash shortages from shift reconciliation (listing the shift IDs), welfare-advance instalments (labelled *"Instalment N of M · {welfareId}"*).
+  3. **Manual itemised** lines from the pending `PayrollAdjustment` queue — bonuses + deductions that a manager added between runs. Each consumed adjustment is marked with the run's id so it can't be double-counted.
+- **FR-PAY-3** **Pre-payroll adjustments** — a `PayrollAdjustment` queue on `/payroll` lets owner / manager / HR add **bonuses** (Performance bonus, Sales target, Overtime, Holiday bonus, Commendation, Allowance, Refund, Other) or **deductions** (Lateness, Cash shortage, Damage, Customer compensation, Uniform, Loan repayment, Other) — each requiring an **employee, category, amount, and a written reason**. The reason shows on the payslip; the audit log records the line as *Payroll bonus queued* / *Payroll deduction queued*. Removable until consumed by a run.
+- **FR-PAY-4** **Itemised payslip view** — earnings (basic + allowances → gross), then **Additions & bonuses** (each line shows category, italic reason, +₦amount), then **Statutory deductions** (PAYE / Pension / NHF), then **Other deductions** (each line shows category, italic reason, −₦amount, including any welfare-advance instalments), then Net pay. Printable via browser.
+- **FR-PAY-5** **Export bank schedule** as CSV: employee, role, gross, bonuses, deductions, net.
 - **FR-PAY-6** **Run history** of prior payroll runs.
 
-### 11.16 Dispatch & Fleet (`/dispatch`)
+### 11.16 Staff Welfare (`/welfare`)
+**Users:** owner, manager, hr, accountant.
+
+Captures the informal-but-frequent staff support common in restaurant ops — medical bills, bereavement, family emergencies, education, weddings, salary advances, gifts. Distinct from petty cash (which covers business expenses, not staff care) and from payroll (which is regular salary).
+
+- **FR-WEL-1** KPI tiles: Pending requests, Live (disbursed) count, **Advances outstanding** (₦ to be recovered via payroll), Year-to-date paid.
+- **FR-WEL-2** **New request** — capture employee, category (Medical / Bereavement / Family emergency / Education / Wedding / Loan / salary advance / Gift / commendation / Other), amount, written reason. If the operator marks the request **repayable**, they pick a repayment plan of 1, 2, 3, 4, 6, 9, or 12 months; the modal previews the per-month instalment live.
+- **FR-WEL-3** Lifecycle: **Pending → Approved → Disbursed → Closed / Repaying → Closed**, with **Rejected** as a terminal alternative carrying its own reason. HR / Manager / Owner approve; Accountant / Owner / Manager disburse.
+- **FR-WEL-4** **Auto repayment via payroll** — every `Repaying` request adds a labelled deduction line to its employee's next payslip (*"Welfare advance · Instalment N of M · {id} · {category}"*); the welfare record's `amountRepaid` increments, and on the final instalment the request auto-transitions to `Closed`.
+- **FR-WEL-5** **Audit** — every welfare action (request, approve, reject, disburse, close) logs to the audit trail under category **HR**, with the actor, amount, and reason in the detail.
+- **FR-WEL-6** **Pages segmented by status** — Pending, Approved, Live (Disbursed / Repaying), and History — so the operator sees the next action they need to take at the top.
+
+### 11.17 Dispatch & Fleet (`/dispatch`)
 **Users:** owner, manager, cashier.
 
 - **FR-DSP-1** KPI tiles: To dispatch, Out for delivery, COD outstanding, Delivered.
@@ -791,6 +826,254 @@ D13 ("no duplicate goods across the Main Store and the sub-stores") was already 
 - The same dialog now offers an **alt unit** dropdown at creation time, so dual-unit goods (yam in kg + pcs, plantain in pcs + kg, etc.) can be set up correctly from the start rather than retrofitted.
 
 Net effect: there is no longer any path for an operator to accidentally create a second "Yam" record by typing it in again, on any branch or sub-store.
+
+---
+
+## 25. Customer accounts — wallet, house tab & statements (added in v1.13)
+
+A real restaurant-CRM extension covering two distinct customer-money flows that are common in Lagos hospitality: **regulars who pre-fund a tab** (prepay → order against it) and **corporate / member accounts** that eat through the month and settle on a statement.
+
+### 25.1 Two-ledger model
+
+| | **Wallet (prepaid)** | **House account (credit)** |
+|---|---|---|
+| **Money flow** | Customer → restaurant | Restaurant extends → customer pays later |
+| **Balance meaning** | What we owe the customer (liability) | What the customer owes us (A/R asset) |
+| **Risk** | None | Bad-debt — capped by `creditLimit` |
+| **Settlement** | Spend draws balance down to ₦0 | Statement issued → customer pays → balance ₦0 |
+| **Per-customer fields** | `wallet: number` | `credit`, `creditLimit: number` |
+
+Both ledgers coexist on the same `Customer` — a customer can prepay *and* charge to credit. `creditLimit === 0` disables house charges.
+
+### 25.2 Data model
+
+- `Customer.wallet` — prepaid balance, ≥ 0.
+- `Customer.credit` — outstanding owed, ≥ 0.
+- `Customer.creditLimit` — cap on `credit`; `0` = house charges disabled.
+- `CustomerLedgerEntry` — append-only with `kind ∈ { wallet-topup, wallet-spend, wallet-refund, credit-charge, credit-payment, credit-writeoff }`, optional `orderId`/`invoiceId` links, and the staff who processed it.
+- `CustomerInvoice` (statement) — period, issue date, due date, status (`Draft / Sent / Partially Paid / Paid / Overdue / Void`), array of `lines` (each citing the source ledger entry), `subtotal`, `paid`, and a `reminders[]` log.
+- `InvoiceReminder` — kind ∈ `{ pre-due, on-due, overdue-7, overdue-14, overdue-30 }`, channel `Email | SMS`, sent-by + timestamp.
+
+Schema bump: `v18 → v19`.
+
+### 25.3 Mutations (audit-logged)
+
+- **`topUpCustomerWallet`** — increases wallet, logs `wallet-topup`.
+- **`spendCustomerWallet`** — decreases wallet, fails if balance insufficient.
+- **`chargeCustomerAccount`** — increases credit, fails if `creditLimit === 0` or `credit + amount > creditLimit` (manager `override` flag bypasses limit). Warning audit when crossing 80 % of the limit.
+- **`recordCustomerPayment`** — decreases credit, applies to a chosen statement or the **oldest open one** by due date. Marks statement `Paid` / `Partially Paid` automatically.
+- **`setCustomerCreditLimit`** — owner/manager/accountant only.
+- **`generateCustomerInvoice`** — sweeps all *unbilled* credit charges (no existing invoice line links to them) in a period into a `CustomerInvoice`. ID format `INV-YYYY-MM-NNNN`.
+- **`sendInvoiceReminder`** — logs reminder + bumps status (`Draft → Sent` on first send; `Sent → Overdue` on overdue-{7,14,30}).
+- **`voidInvoice`** — soft-deletes a statement (status `Void`).
+
+### 25.4 Entry points (zero new nav items)
+
+1. **`/customers` index** — new KPI tiles **On customer wallets** and **Outstanding A/R**, plus a new **Account** column on the table showing per-row balance chips.
+2. **Accounts receivable section** on `/customers` — A/R aging buckets (`Current / 1-30 / 31-60 / 61-90 / 90+`), per-customer rows with limit usage bar and a one-click *Open account* link.
+3. **Customer 360 modal** — now tabbed (**Profile / Account / Activity**). The *Account* tab shows two big balance cards (wallet · house) with inline actions: **Top up · Charge spend · Post charge · Record payment · Generate statement · Edit limit**. Below: list of statements + recent ledger entries with debit/credit icons.
+4. **Invoice modal** — printable statement (browser print → PDF), full reminder cadence with status pips, reminder history.
+
+### 25.5 Reminder cadence (industry standard for A/R)
+
+| Kind | Trigger | Tone |
+|---|---|---|
+| `pre-due` | 3 days before due | FYI |
+| `on-due` | On the due date | Friendly |
+| `overdue-7` | 7 days late | Firm |
+| `overdue-14` | 14 days late | Escalation |
+| `overdue-30` | 30 days late | **Final notice**, account suspended |
+
+All reminders are *manually fired* from the invoice modal in the prototype (`Email | SMS`); a sent-reminder leaves an entry in the invoice's `reminders[]` log and an audit-log entry.
+
+### 25.6 Safeguards
+
+- Wallet **never goes negative** — `spendCustomerWallet` rejects insufficient-funds attempts.
+- House charge **blocked at the limit** — toast: *"Over credit limit — collect payment first or get a manager override"*. The mutation accepts an `override: true` argument that owner/manager UI can pass to bypass.
+- A credit limit **cannot be set below the current owed amount** (would orphan unpaid debt outside the cap).
+- Every wallet/credit movement and every statement action is **audit-logged** under the **Finance** category.
+
+### 25.7 Roles
+
+- **Owner / Manager / Accountant** — can top up, set limits, generate statements, record payments, send reminders. These are the only roles that see the management actions on the Customer 360 *Account* tab.
+- **Cashier / Bartender** — will be able to spend wallets and post house charges from the **POS payment screen** (Phase 2 — see below). Cannot adjust limits or issue statements.
+
+### 25.8 Phase 2 — POS payment integration
+
+The data model and mutations are ready for the POS. Next-iteration scope:
+
+- Add **Wallet** and **House charge** chips to the POS PaymentScreen `payMethods` strip.
+- Gate the chips behind "order has a customer linked" (extend dine-in flow with customer linkage).
+- On payment-complete, fire `spendCustomerWallet` / `chargeCustomerAccount` against the new order's `orderId`, leaving a linked ledger entry.
+- Surface wallet balance + remaining credit beside the customer's name in the cart header.
+
+Until then, the **Post charge** action on the customer modal simulates exactly what the POS will do, so the wallet/credit/invoice flow is fully testable end-to-end today.
+
+---
+
+## 26. Whole-product audit & onboarding roadmap (added in v1.17)
+
+A thorough audit of the working prototype against the industry-standard restaurant-OS feature set, with each gap categorised, prioritised, and assigned to a phase. The implementation already closes the highest-priority items; the remainder is the roadmap.
+
+### 26.1 Rider & fleet (mostly **CLOSED** in v1.17)
+
+| Gap | Status | Notes |
+|---|---|---|
+| Rider has identity (phone, next-of-kin, hire date, licence) | ✅ Closed | New required + optional fields on `Rider`. The add-rider modal asks for the full set on internal bikes and only contact for 3PL partners. |
+| Bike plate, make, acquisition cost | ✅ Closed | Bike metadata on `Rider`; plate is visible on every dispatch card; acquisition cost seeds the P&L. |
+| Bike P&L (money in vs out) | ✅ Closed | New `FleetTxn` append-only ledger with kinds `purchase / fuel / maintenance / fine / delivery-fee / income / expense`. `completeDelivery` auto-credits the fee. Rider 360 shows Income · Outflow · Net P&L with a date-range filter. |
+| Rider performance (deliveries, on-time, avg duration) | ✅ Closed | Rider 360 computes deliveries-in-window, on-time rate (≤ 45 min from assignment to delivered), and average duration. |
+| COD held vs settled | ✅ Already in v1.0 | `settleCOD` was already wired; the dispatch card calls it out in red until settled. |
+| Rider attendance / scheduling | 📋 **Roadmap** | Today rider clock-in/out is just status. Production: link `Rider` to an `Employee` record for full scheduling. |
+| Bike depreciation | 📋 Roadmap | Acquisition is treated as a single outflow. Production: straight-line depreciation over the asset's useful life (typically 3 years for delivery bikes). |
+| Rider commission / payout | 📋 Roadmap | Currently fees credit the bike — not the rider personally. Production needs a commission model (e.g. ₦300/delivery + base) and a payable to the rider. |
+
+### 26.2 Delivery flow (mostly **CLOSED** in v1.17)
+
+| Gap | Status | Notes |
+|---|---|---|
+| New cashier needs the address of a returning customer without asking | ✅ Closed | Phone-first lookup in the POS Takeout/Delivery modal with live CRM suggestions and a "Returning customer" pill (tier · visits · lifetime · last address). |
+| Customer's address persists across orders | ✅ Closed | `Customer.address` added to the golden record. New / changed addresses save back on submit. |
+| Optional landmark | ✅ Closed | `Customer.addressLandmark` field; not exposed in UI yet — surfaces in next iteration. |
+| Customer search by name (not just phone) | ✅ Closed | Suggestions match on either. |
+| Address book — multiple addresses per customer | 📋 Roadmap | Today one canonical address per customer. Industry standard for chain delivery is *home / office / saved* — modelled as an array. |
+| Geocoding & map | 📋 Roadmap | Address is free text. Production: optional pinned location for the rider. |
+| Delivery time estimates | 📋 Roadmap | Today the rider hits "Delivered" manually; no ETA exposed. |
+| Order tracking link for the customer | 📋 Roadmap | Production would send the customer a status link. |
+
+### 26.3 Floor plan / tables (NEW in v1.17)
+
+| Gap | Status | Notes |
+|---|---|---|
+| Tables are seeded — never editable | ✅ Closed | New `/settings` page with full add / rename / re-seat / delete (delete blocked while occupied or reserved). |
+| Tables grouped by zone | ✅ Closed | Settings → Floor plan groups by zone, suggests existing zones as datalist. |
+| Tables are *per-branch* | 📋 Roadmap | `TableRec` doesn't carry a `branch` today — the seeded set is shared across all branches. Production: add `branch` to `TableRec` and scope all reads. **HIGH PRIORITY** — listed under Phase 2. |
+| Drag-and-drop floor plan editor | 📋 Roadmap | Settings is list-based; a visual editor (à la SevenRooms / OpenTable) is a nice-to-have. |
+| Combine / split tables | 📋 Roadmap | Industry standard for groups of 10+ — needs a join-tables flow. |
+
+### 26.4 Roles & role definitions (**Roadmap**)
+
+| Gap | Status | Notes |
+|---|---|---|
+| Roles are hardcoded (`STAFF_ROSTER` + `StaffRole` literal union) | 📋 Roadmap | Today the eight roles (owner / manager / cashier / kitchen / bartender / storekeeper / accountant / hr) are baked into TypeScript. Production must let the owner **create custom roles** and define the permissions matrix per role. |
+| PIN-based auth is dev-only | 📋 Roadmap | Already called out in §15 / §16. Production: phone or email + OTP / SSO. |
+| Role permissions in code, not data | 📋 Roadmap | Each page hard-codes role gates. Production: a permissions table per role, role-permission joins, and a UI to edit them. |
+| Cross-branch staff assignment | 📋 Roadmap | One staff member is currently bound to one branch. Multi-branch managers (covering Ikoyi + Agungi) need a many-to-many. |
+
+### 26.5 Restaurant onboarding (multi-tenant — **Roadmap**)
+
+The current prototype is single-tenant (Haven 11 / 702 ROS hardcoded). For a productised offering serving multiple restaurant groups, an onboarding flow is needed. Phased model:
+
+**Phase A — Self-serve sign-up (Day 0)**
+1. Owner signs up with email + phone. Identity verification.
+2. Restaurant entity created (name, type — restaurant / lounge / hybrid / nightclub).
+3. Default chart of accounts seeded, default categories, default reminder cadence.
+
+**Phase B — Branch setup (Day 1)**
+1. Add branches (name, address, kind: hub / spoke).
+2. For each branch: tables (via `/settings` — already shipped), zones, opening hours.
+3. Define shift periods (already configurable per branch — see v1.1).
+
+**Phase C — Catalogue (Day 2-3)**
+1. Bulk-import inventory via the existing **CSV importer** (already shipped — accepts SKU / name / category / line / on-hand / unit / reorder / cost).
+2. Bulk-import menu items + recipes.
+3. Define product categories (already manageable — v1.10).
+
+**Phase D — Team (Day 3-7)**
+1. Onboard staff via the existing `/staff` page (already supports compliance docs — v1.5).
+2. Assign roles + branches.
+3. Set weekly schedule.
+
+**Phase E — Suppliers & money**
+1. Add vendors with payment terms.
+2. Set petty-cash float per branch.
+3. Set tax / VAT rate (currently hardcoded at 7.5% — needs to be a setting).
+
+**Phase F — Go live**
+1. Test order from cashier → kitchen → completed.
+2. First real order.
+
+The UI to drive Phase A → F is the **next-major-phase deliverable**. Today an admin who knows the data model can complete all steps via the existing screens (which is why each step's *destination screen* is already shipped). What's missing is the **guided checklist** that walks an owner through them.
+
+### 26.6 Other gaps surfaced by the audit
+
+| Area | Gap | Priority |
+|---|---|---|
+| Tax / VAT | 7.5% rate hardcoded; should be a branch-level setting | **High** — easy fix |
+| Receipts | No printer integration | High — needs ESC/POS driver + USB/Bluetooth |
+| Cash drawer | No drawer-open event on payment | Medium — needs hardware integration |
+| Reservations | `TableRec.reservation` is a string note; needs a `Reservation` entity with party size, time, status | Medium |
+| Recurring expenses (rent, payroll) | Today expenses are one-off | Medium |
+| Multi-currency | ₦ hardcoded; export operations may need USD/EUR | Low |
+| Audit trail filter by date range | Audit log has no date filter yet | Medium — `DateRangePicker` exists, just needs wiring |
+| Reports filter by date range | Same | Medium |
+| Transfer / PO / Expense filter by date range | Same | Medium |
+| Receipt-printer test page | None | Low — Phase B of onboarding |
+| Tax-receipt compliance (FIRS in Nigeria) | Not modelled | High for production |
+| Backup / restore | localStorage only | **Critical** for production — needs server-side persistence |
+| Multi-device sync | None | Critical for production |
+| Offline mode | None | High for Nigerian power-reliability reality |
+
+### 26.7 What was closed this turn — recap
+
+- **Rider profile + bike P&L + performance** — full identity record, append-only fleet ledger, auto-credited delivery fees, Rider 360 modal.
+- **Customer-aware delivery flow** — phone-first lookup, autofill, persisted address — a new cashier never has to ask a regular for their address.
+- **Floor-plan management** — `/settings` page lets owner/manager add / rename / delete tables grouped by zone.
+- **Audit document** — this section, surfacing every remaining gap with priority and phase.
+
+The remaining gaps (per-branch tables, custom roles, multi-tenant onboarding flow, hardware integration, server-side persistence) are explicitly tracked here and will be picked up in priority order.
+
+### 26.8 Role permissions matrix (effective in v1.20)
+
+Codifying what each role can / cannot do — industry standard for Toast / Square / Lightspeed. Production must move this from code-hardcoded gates to a permissions table editable from `/settings`.
+
+| Action | Owner | Manager | Cashier | Bartender | Kitchen | Storekeeper | Accountant | HR |
+|---|---|---|---|---|---|---|---|---|
+| Take orders at POS | ✓ | ✓ | ✓ | ✓ | | | | |
+| Take payment (cash/card/transfer/split) | ✓ | ✓ | ✓ | ✓ | | | | |
+| Apply discount > ₦500 (needs override) | ✓ | ✓ | with PIN | with PIN | | | | |
+| Void order | ✓ | ✓ | with PIN | with PIN | | | | |
+| Open/close shift | ✓ | ✓ | ✓ | ✓ | | | | |
+| Mark ticket Ready (Kitchen/Bar) | ✓ | ✓ | | ✓ | ✓ | | | |
+| Mark ticket Served (waiter) | ✓ | ✓ | ✓ | ✓ | | | | |
+| Hire internal rider | ✓ | ✓ | | | | ✓ | | |
+| Add 3PL partner | ✓ | ✓ | | | | ✓ | | |
+| Assign delivery to rider | ✓ | ✓ | ✓ | | | ✓ | | |
+| Mark delivery complete | ✓ | ✓ | ✓ | | | ✓ | | |
+| Log fleet expense | ✓ | ✓ | | | | ✓ | | |
+| Settle COD | ✓ | ✓ | | | | ✓ | | |
+| Request petty cash | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | |
+| Approve petty cash | ✓ | | | | | | ✓ | |
+| Disburse petty cash | ✓ | | | | | | ✓ | |
+| Top up petty-cash float | ✓ | | | | | | ✓ | |
+| Reconcile (return change + receipt) | ✓ | requester | requester | requester | | requester | ✓ | |
+| Receive stock (Strong Room) | ✓ | ✓ | | | | ✓ | | |
+| Approve transfer (Strong Room → branch) | ✓ | ✓ | | | | | | |
+| Issue transfer | ✓ | ✓ | | | | ✓ | | |
+| Receive transfer at branch | ✓ | ✓ | | | | ✓ | | |
+| Internal stock request | ✓ | ✓ | | ✓ | ✓ | ✓ | | |
+| Record waste | ✓ | ✓ | | ✓ | ✓ | ✓ | | |
+| Manage categories | ✓ | ✓ | | | | | | |
+| Manage menu / recipes | ✓ | | | | | | | |
+| Raise PO | ✓ | ✓ | | | | ✓ | | |
+| Approve PO | ✓ | ✓ | | | | | | |
+| Mark PO paid | ✓ | | | | | | ✓ | |
+| Customer wallet top-up / charge | ✓ | ✓ | | | | | ✓ | |
+| Set customer credit limit | ✓ | ✓ | | | | | ✓ | |
+| Generate / send statement | ✓ | ✓ | | | | | ✓ | |
+| Record customer payment | ✓ | ✓ | | | | | ✓ | |
+| Hire / off-board staff | ✓ | ✓ | | | | | | ✓ |
+| Edit schedule | ✓ | ✓ | | | | | | ✓ |
+| Run payroll | ✓ | ✓ | | | | | | ✓ |
+| Queue payroll adjustment (bonus/deduction) | ✓ | ✓ | | | | | | ✓ |
+| Approve welfare request | ✓ | ✓ | | | | | | ✓ |
+| Disburse welfare | ✓ | ✓ | | | | | ✓ | |
+| View Financials (P&L · Balance Sheet) | ✓ | ✓ | | | | | ✓ | |
+| Manage floor plan / tables | ✓ | ✓ | | | | | | |
+| View Audit Trail | ✓ | ✓ | | | | | ✓ | ✓ |
+| Roam branches | ✓ | | | | | | ✓ | ✓ |
+
+**Industry alignment:** matches the role split at Toast, Square for Restaurants, Lightspeed. The single Nigerian-specific addition is **Welfare disbursement** being shared between Accountant and Manager (in larger Western groups, that's HR's call; in our context, the cash custodian needs to be in the loop).
 
 ---
 

@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth, STAFF_ROSTER, type StaffUser } from "@/lib/auth";
+import { useStore } from "@/lib/store";
 import { ChefHat, Wine, CreditCard, LayoutDashboard, Boxes, Crown, Delete, Calculator, UserCog } from "lucide-react";
 
 const roleIcon: Record<string, typeof ChefHat> = {
@@ -29,10 +30,14 @@ const roleColor: Record<string, { bg: string; text: string; border: string }> = 
 
 function PinPad({ staff, onClose }: { staff: StaffUser; onClose: () => void }) {
   const { login } = useAuth();
+  const store = useStore();
   const router = useRouter();
   const [pin, setPin] = useState("");
   const [error, setError] = useState(false);
   const [shake, setShake] = useState(false);
+  // Track failed attempts within this PinPad session so the audit entry
+  // distinguishes a slip ("Login failed × 1") from a real attack ("× 5+").
+  const [failedAttempts, setFailedAttempts] = useState(0);
 
   const Icon = roleIcon[staff.role];
   const col = roleColor[staff.role];
@@ -47,8 +52,34 @@ function PinPad({ staff, onClose }: { staff: StaffUser; onClose: () => void }) {
 
   function attempt(value: string) {
     if (login(staff.id, value)) {
+      // Industry-standard audit trail — every successful login lands here.
+      // Failed attempts (≥1) are appended to the same entry so we can spot
+      // suspicious patterns at a glance from /audit.
+      store.logAudit({
+        branch: staff.branch ?? "—",
+        actor: staff.name,
+        category: "Security",
+        action: "Sign-in",
+        detail: failedAttempts > 0
+          ? `${staff.role} signed in · ${failedAttempts} failed attempt${failedAttempts === 1 ? "" : "s"} before success`
+          : `${staff.role} signed in`,
+        ref: staff.id,
+        severity: failedAttempts >= 3 ? "warning" : "info",
+      });
       router.push(staff.defaultRoute);
     } else {
+      // PCI-DSS-style audit on failed PIN attempts — every wrong entry is logged.
+      const nextFailed = failedAttempts + 1;
+      setFailedAttempts(nextFailed);
+      store.logAudit({
+        branch: staff.branch ?? "—",
+        actor: staff.name,
+        category: "Security",
+        action: "Sign-in failed",
+        detail: `Wrong PIN for ${staff.role} (attempt ${nextFailed})`,
+        ref: staff.id,
+        severity: nextFailed >= 3 ? "warning" : "info",
+      });
       setShake(true);
       setError(true);
       setPin("");

@@ -7,7 +7,7 @@ import {
   LayoutDashboard, ShoppingCart, Boxes, ChefHat, Wine,
   ClipboardList, Coins, Users, CalendarRange, HeartHandshake,
   BarChart3, ShieldAlert, Bell, LogOut, AlertTriangle, CheckCircle2, Menu, X,
-  ArrowLeftRight, Building2, Warehouse, ChevronDown, Check, Truck, ScrollText, Wallet, Banknote, Bike, History, UserCog,
+  ArrowLeftRight, Building2, Warehouse, ChevronDown, Check, Truck, ScrollText, Wallet, Banknote, Bike, History, UserCog, Settings, HandHeart, Scale,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAuth, type StaffRole } from "@/lib/auth";
@@ -19,80 +19,158 @@ type NavItem = {
   label: string;
 };
 
-const allModules: NavItem[] = [
-  { href: "/", icon: LayoutDashboard, label: "Overview" },
-  { href: "/pos", icon: ShoppingCart, label: "Front of House" },
-  { href: "/inventory", icon: Boxes, label: "Inventory" },
-  { href: "/transfers", icon: ArrowLeftRight, label: "Stock Transfers" },
-  { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
-  { href: "/vendors", icon: Truck, label: "Vendors" },
-  { href: "/menu", icon: ChefHat, label: "Menu & Recipes" },
-  { href: "/kitchen-bar", icon: Wine, label: "Kitchen & Bar" },
-  { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
-  { href: "/cashier", icon: Coins, label: "Front of House on Shift" },
-  { href: "/expenses", icon: Wallet, label: "Expenses" },
-  { href: "/staff", icon: Users, label: "Staff" },
-  { href: "/hr", icon: UserCog, label: "HR Dashboard" },
-  { href: "/payroll", icon: Banknote, label: "Payroll" },
-  { href: "/events", icon: CalendarRange, label: "Events" },
-  { href: "/customers", icon: HeartHandshake, label: "Customers" },
-  { href: "/reports", icon: BarChart3, label: "Analytics" },
-  { href: "/audit", icon: History, label: "Audit Trail" },
-  { href: "/alerts", icon: ShieldAlert, label: "Alerts & Security" },
-];
+/**
+ * A *section* groups related items under a small muted header (Toast / Square /
+ * Lightspeed pattern). An empty `label` ("") means no header — used for the
+ * first section so the role's home page sits at the very top of the sidebar.
+ */
+type NavSection = { label: string; items: NavItem[] };
 
-const roleNav: Record<StaffRole, NavItem[]> = {
-  owner: allModules,
-  manager: [
-    { href: "/manager-dashboard", icon: LayoutDashboard, label: "Dashboard" },
-    { href: "/pos", icon: ShoppingCart, label: "Front of House" },
-    { href: "/inventory", icon: Boxes, label: "Inventory" },
-    { href: "/transfers", icon: ArrowLeftRight, label: "Stock Transfers" },
-    { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
-    { href: "/vendors", icon: Truck, label: "Vendors" },
-    { href: "/kitchen-bar", icon: Wine, label: "Kitchen & Bar" },
-    { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
-    { href: "/cashier", icon: Coins, label: "Front of House on Shift" },
-    { href: "/expenses", icon: Wallet, label: "Expenses" },
-    { href: "/staff", icon: Users, label: "Staff" },
-    { href: "/hr", icon: UserCog, label: "HR Dashboard" },
-    { href: "/payroll", icon: Banknote, label: "Payroll" },
-    { href: "/customers", icon: HeartHandshake, label: "Customers" },
-    { href: "/reports", icon: BarChart3, label: "Analytics" },
-    { href: "/audit", icon: History, label: "Audit Trail" },
+const roleNav: Record<StaffRole, NavSection[]> = {
+  // ── Owner — full access, grouped into 6 sections ───────────────────────────
+  owner: [
+    { label: "", items: [
+      { href: "/", icon: LayoutDashboard, label: "Overview" },
+    ]},
+    { label: "Operate", items: [
+      { href: "/pos", icon: ShoppingCart, label: "Front of House" },
+      { href: "/cashier", icon: Coins, label: "Shifts" },
+      { href: "/kitchen-bar", icon: Wine, label: "Kitchen & Bar" },
+      { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
+      { href: "/alerts", icon: ShieldAlert, label: "Alerts" },
+    ]},
+    { label: "Inventory", items: [
+      { href: "/inventory", icon: Boxes, label: "Stock" },
+      { href: "/transfers", icon: ArrowLeftRight, label: "Transfers" },
+      { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
+      { href: "/vendors", icon: Truck, label: "Vendors" },
+      { href: "/menu", icon: ChefHat, label: "Menu & Recipes" },
+    ]},
+    { label: "People", items: [
+      { href: "/staff", icon: Users, label: "Staff" },
+      { href: "/hr", icon: UserCog, label: "HR" },
+      { href: "/payroll", icon: Banknote, label: "Payroll" },
+      { href: "/welfare", icon: HandHeart, label: "Welfare" },
+    ]},
+    { label: "Money", items: [
+      { href: "/customers", icon: HeartHandshake, label: "Customers" },
+      { href: "/expenses", icon: Wallet, label: "Expenses" },
+      { href: "/financials", icon: Scale, label: "Financials" },
+      { href: "/audit", icon: History, label: "Audit Trail" },
+    ]},
+    { label: "Grow", items: [
+      { href: "/events", icon: CalendarRange, label: "Events" },
+      { href: "/reports", icon: BarChart3, label: "Analytics" },
+    ]},
+    { label: "System", items: [
+      { href: "/settings", icon: Settings, label: "Settings" },
+    ]},
   ],
+
+  // ── Manager — same structure, branch-scoped ────────────────────────────────
+  manager: [
+    { label: "", items: [
+      { href: "/manager-dashboard", icon: LayoutDashboard, label: "Dashboard" },
+    ]},
+    { label: "Operate", items: [
+      { href: "/pos", icon: ShoppingCart, label: "Front of House" },
+      { href: "/cashier", icon: Coins, label: "Shifts" },
+      { href: "/kitchen-bar", icon: Wine, label: "Kitchen & Bar" },
+      { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
+    ]},
+    { label: "Inventory", items: [
+      { href: "/inventory", icon: Boxes, label: "Stock" },
+      { href: "/transfers", icon: ArrowLeftRight, label: "Transfers" },
+      { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
+      { href: "/vendors", icon: Truck, label: "Vendors" },
+    ]},
+    { label: "People", items: [
+      { href: "/staff", icon: Users, label: "Staff" },
+      { href: "/hr", icon: UserCog, label: "HR" },
+      { href: "/payroll", icon: Banknote, label: "Payroll" },
+      { href: "/welfare", icon: HandHeart, label: "Welfare" },
+    ]},
+    { label: "Money", items: [
+      { href: "/customers", icon: HeartHandshake, label: "Customers" },
+      { href: "/expenses", icon: Wallet, label: "Expenses" },
+      { href: "/financials", icon: Scale, label: "Financials" },
+      { href: "/audit", icon: History, label: "Audit Trail" },
+    ]},
+    { label: "Grow", items: [
+      { href: "/reports", icon: BarChart3, label: "Analytics" },
+    ]},
+    { label: "System", items: [
+      { href: "/settings", icon: Settings, label: "Settings" },
+    ]},
+  ],
+
+  // ── Single-task roles — flat sidebar, no headers needed ────────────────────
   cashier: [
-    { href: "/cashier-home", icon: LayoutDashboard, label: "My Shift" },
-    { href: "/pos", icon: ShoppingCart, label: "Front of House" },
-    { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
-    { href: "/expenses", icon: Wallet, label: "Expenses" },
+    // Industry-standard cashier scope: take orders + take payments + manage their
+    // shift + request petty cash. NOT: rider/fleet management, expense approval,
+    // inventory, vendors, HR. Their dispatch view (assign/complete delivery jobs)
+    // is reachable from `/cashier-home` ↦ the order-tracking strip when needed.
+    { label: "", items: [
+      { href: "/cashier-home", icon: LayoutDashboard, label: "My Shift" },
+      { href: "/pos", icon: ShoppingCart, label: "Front of House" },
+      { href: "/expenses", icon: Wallet, label: "Petty cash" },
+    ]},
   ],
   kitchen: [
-    { href: "/kitchen-home", icon: ChefHat, label: "Kitchen Display" },
+    { label: "", items: [
+      { href: "/kitchen-home", icon: ChefHat, label: "Kitchen Display" },
+    ]},
   ],
   bartender: [
-    { href: "/bar-home", icon: Wine, label: "Bar Queue" },
-    { href: "/pos", icon: ShoppingCart, label: "Front of House" },
+    { label: "", items: [
+      { href: "/bar-home", icon: Wine, label: "Bar Queue" },
+      { href: "/pos", icon: ShoppingCart, label: "Front of House" },
+    ]},
   ],
+
+  // ── Specialist roles — small enough for one section but still grouped ──────
   storekeeper: [
-    { href: "/store-home", icon: Boxes, label: "Store" },
-    { href: "/inventory", icon: Boxes, label: "Inventory" },
-    { href: "/transfers", icon: ArrowLeftRight, label: "Stock Transfers" },
-    { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
-    { href: "/vendors", icon: Truck, label: "Vendors" },
-    { href: "/expenses", icon: Wallet, label: "Expenses" },
+    { label: "", items: [
+      { href: "/store-home", icon: Boxes, label: "Store" },
+    ]},
+    { label: "Inventory", items: [
+      { href: "/inventory", icon: Boxes, label: "Stock" },
+      { href: "/transfers", icon: ArrowLeftRight, label: "Transfers" },
+      { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
+      { href: "/vendors", icon: Truck, label: "Vendors" },
+    ]},
+    { label: "Money", items: [
+      { href: "/expenses", icon: Wallet, label: "Expenses" },
+    ]},
   ],
   accountant: [
-    { href: "/expenses", icon: Wallet, label: "Expenses" },
-    { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
-    { href: "/vendors", icon: Truck, label: "Vendors" },
-    { href: "/audit", icon: History, label: "Audit Trail" },
+    { label: "", items: [
+      { href: "/financials", icon: Scale, label: "Financials" },
+    ]},
+    { label: "Money", items: [
+      { href: "/expenses", icon: Wallet, label: "Expenses" },
+      { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
+      { href: "/vendors", icon: Truck, label: "Vendors" },
+    ]},
+    { label: "People", items: [
+      { href: "/welfare", icon: HandHeart, label: "Welfare" },
+    ]},
+    { label: "Oversight", items: [
+      { href: "/audit", icon: History, label: "Audit Trail" },
+    ]},
   ],
   hr: [
-    { href: "/hr", icon: UserCog, label: "HR Dashboard" },
-    { href: "/staff", icon: Users, label: "Staff" },
-    { href: "/payroll", icon: Banknote, label: "Payroll" },
-    { href: "/audit", icon: History, label: "Audit Trail" },
+    { label: "", items: [
+      { href: "/hr", icon: UserCog, label: "HR" },
+    ]},
+    { label: "People", items: [
+      { href: "/staff", icon: Users, label: "Staff" },
+      { href: "/payroll", icon: Banknote, label: "Payroll" },
+      { href: "/welfare", icon: HandHeart, label: "Welfare" },
+    ]},
+    { label: "Oversight", items: [
+      { href: "/audit", icon: History, label: "Audit Trail" },
+    ]},
   ],
 };
 
@@ -119,6 +197,16 @@ function NotificationBell() {
   // Notifications are derived live from the current branch's store state.
   const branch = store.currentBranch;
   const notes: Note[] = [
+    // Ready tickets — kitchen / bar flagged these "Ready"; the waiter needs to
+    // see them ASAP. Highest priority so they sit at the top of the bell.
+    ...store.tickets.filter((t) => t.branch === branch && t.status === "Ready").slice(0, 6).map((t) => ({
+      id: `ready-${t.id}`,
+      tone: "ok" as NoteTone,
+      title: `Ready to serve — ${t.label}`,
+      meta: `${t.station} · ${t.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}`,
+      time: "live",
+      href: "/cashier-home",
+    })),
     ...store.counts.filter((c) => c.overPour && c.branch === branch).slice(0, 3).map((c) => ({
       id: `op-${c.id}`,
       tone: "danger" as NoteTone,
@@ -346,26 +434,35 @@ export function AppShell({ title, subtitle, children }: {
 
   const navLinks = (
     <>
-      {modules.map((m) => {
-        const Icon = m.icon;
-        const active = pathname === m.href;
-        return (
-          <Link
-            key={m.href}
-            href={m.href}
-            onClick={() => setMobileNav(false)}
-            className={[
-              "flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-medium transition-colors",
-              active
-                ? "bg-primary text-primary-foreground"
-                : "text-foreground/70 hover:bg-surface hover:text-foreground",
-            ].join(" ")}
-          >
-            <Icon className="h-4.5 w-4.5 shrink-0" strokeWidth={1.75} />
-            {m.label}
-          </Link>
-        );
-      })}
+      {modules.map((section, sectionIdx) => (
+        <div key={sectionIdx} className={sectionIdx > 0 ? "mt-4" : ""}>
+          {section.label && (
+            <p className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {section.label}
+            </p>
+          )}
+          {section.items.map((m) => {
+            const Icon = m.icon;
+            const active = pathname === m.href;
+            return (
+              <Link
+                key={m.href}
+                href={m.href}
+                onClick={() => setMobileNav(false)}
+                className={[
+                  "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
+                  active
+                    ? "bg-primary text-primary-foreground"
+                    : "text-foreground/70 hover:bg-surface hover:text-foreground",
+                ].join(" ")}
+              >
+                <Icon className="h-4.5 w-4.5 shrink-0" strokeWidth={1.75} />
+                {m.label}
+              </Link>
+            );
+          })}
+        </div>
+      ))}
     </>
   );
 

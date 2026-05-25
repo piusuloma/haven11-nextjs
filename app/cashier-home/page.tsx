@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ShoppingCart, Banknote, CreditCard, Smartphone, Users } from "lucide-react";
+import { ShoppingCart, Banknote, CreditCard, Smartphone, Users, BellRing, CheckCircle2, ChefHat, Wine } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { ShiftBanner } from "@/components/ShiftBanner";
 import { ManagerApprovalModal } from "@/components/ManagerApprovalModal";
@@ -74,6 +74,10 @@ export default function CashierHome() {
           <ShoppingCart className="h-8 w-8" strokeWidth={1.5} />
         </div>
       </button>
+
+      {/* Ready to serve — kitchen / bar marked these "Ready"; waiter sees them here so
+          they don't have to walk to the kitchen window or check the display. */}
+      <ReadyTickets />
 
       {/* Shift KPIs — computed from orders rung on this shift */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -222,5 +226,79 @@ export default function CashierHome() {
         />
       )}
     </AppShell>
+  );
+}
+
+// ── Ready to serve ──────────────────────────────────────────────────────────
+
+/**
+ * Tickets the Kitchen or Bar have flagged "Ready". Surfaces them to the waiter
+ * so they don't have to walk over to a kitchen display — Toast / Square /
+ * Lightspeed all do this. "Mark served" clears the ticket from the queue.
+ */
+function ReadyTickets() {
+  const store = useStore();
+  const ready = store.tickets.filter(
+    (t) => t.branch === store.currentBranch && t.status === "Ready",
+  );
+  if (ready.length === 0) return null;
+
+  return (
+    <section className="rounded-3xl border-2 border-emerald-300 bg-emerald-50/60 p-4 sm:p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="grid h-9 w-9 place-items-center rounded-full bg-emerald-500 text-white animate-pulse">
+          <BellRing className="h-4 w-4" />
+        </span>
+        <div>
+          <p className="text-base font-bold text-emerald-900">
+            {ready.length} {ready.length === 1 ? "order" : "orders"} ready to serve
+          </p>
+          <p className="text-xs text-emerald-800/80">
+            Kitchen / Bar have flagged these — tap <span className="font-semibold">Served</span> after delivering to the guest
+          </p>
+        </div>
+      </div>
+
+      <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        {ready.map((t) => {
+          const StationIcon = t.station === "Kitchen" ? ChefHat : Wine;
+          const minsWaiting = Math.max(0, Math.round((Date.now() - t.createdAt) / 60_000));
+          return (
+            <li
+              key={t.id}
+              className="rounded-2xl border border-emerald-200 bg-white p-3 flex items-start gap-3"
+            >
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-emerald-100 text-emerald-700">
+                <StationIcon className="h-4.5 w-4.5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <p className="font-semibold truncate">{t.label}</p>
+                  <span className="text-[11px] text-muted-foreground shrink-0">
+                    {t.station} · {minsWaiting}m ago
+                  </span>
+                </div>
+                <p className="text-xs text-foreground/85 line-clamp-1 mt-0.5">
+                  {t.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}
+                </p>
+                <p className="text-[11px] text-muted-foreground font-mono mt-0.5">
+                  Order {t.orderId}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  store.advanceTicket(t.id);
+                  toast.success(`${t.label} marked served`);
+                }}
+                className="inline-flex items-center gap-1 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 shrink-0"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                Served
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

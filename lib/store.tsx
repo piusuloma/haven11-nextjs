@@ -277,6 +277,29 @@ export interface Vendor {
   category: string;
 }
 
+/**
+ * Vendor-side volume-break pricing — Toast / Lightspeed / MarketMan / xtraCHEF
+ * all model this as a list of tiers per vendor-SKU. Each tier says "from this
+ * quantity upwards, the unit cost is X." When the PO line quantity changes,
+ * the applicable tier is the highest `minQty` ≤ ordered quantity.
+ */
+export interface VendorPriceTier {
+  /** Order quantity at which this tier kicks in. The first tier is usually `1`. */
+  minQty: number;
+  /** Unit cost (₦) at this tier. */
+  unitCost: number;
+}
+
+export interface VendorSkuPricing {
+  id: string;
+  vendorId: string;
+  sku: string;
+  /** Sorted ascending by `minQty` (the store enforces this on save). */
+  tiers: VendorPriceTier[];
+  /** Optional note shown next to the price hint — "₦5,200 per case of 24" etc. */
+  note?: string;
+}
+
 export type POStatus = "Pending Approval" | "Ordered" | "Partially Received" | "Received" | "Rejected";
 
 export interface POLine {
@@ -425,6 +448,26 @@ export interface Disciplinary {
   by: string;
 }
 
+/**
+ * One line on a payslip — either an `addition` (bonus / overtime / refund) or
+ * a `deduction` (lateness / shortage / damages / advance repayment / fine).
+ * Every line carries a `reason` for the auditor / employee to read.
+ */
+export interface PayslipAdjustment {
+  id: string;
+  kind: "addition" | "deduction";
+  /** Short category — "Lateness", "Performance bonus", "Loan repayment", etc. */
+  category: string;
+  /** Free-text reason — "3 days late this month" / "October sales target met". */
+  reason: string;
+  /** Always positive — the `kind` decides the sign. */
+  amount: number;
+  /** If this line was auto-generated (lateness, shortage, welfare-advance repayment), records the source. */
+  source?: "lateness" | "shortage" | "welfare-repayment" | "manual";
+  /** Linked welfare-advance id when `source === "welfare-repayment"`. */
+  welfareId?: string;
+}
+
 export interface Payslip {
   employeeId: string;
   name: string;
@@ -432,11 +475,16 @@ export interface Payslip {
   base: number;
   allowances: number;
   gross: number;
+  // Statutory deductions — always present, fixed formulae.
   paye: number;
   pension: number;
   nhf: number;
-  latenessDeduction: number;
-  shortageDeduction: number;
+  /** Itemised additions (bonuses, overtime). Each carries a reason. */
+  additions: PayslipAdjustment[];
+  /** Itemised deductions beyond statutory PAYE / pension / NHF. Each carries a reason. */
+  deductions: PayslipAdjustment[];
+  totalAdditions: number;
+  totalDeductions: number;   // statutory + itemised deductions combined
   net: number;
 }
 
@@ -450,6 +498,74 @@ export interface PayrollRun {
   totalNet: number;
 }
 
+/**
+ * Pending payroll adjustment — added between runs (e.g. a manager records
+ * "Tunde gets ₦20,000 for hitting the November target"). Folded into the next
+ * `runPayroll` for that employee + branch, then marked consumed.
+ */
+export interface PayrollAdjustment {
+  id: string;
+  branch: string;
+  employeeId: string;
+  employeeName: string;
+  kind: "addition" | "deduction";
+  category: string;
+  reason: string;
+  amount: number;
+  at: number;
+  by: string;
+  /** Set when this adjustment was consumed by a payroll run. */
+  consumedByRunId?: string;
+}
+
+// ── Staff welfare ────────────────────────────────────────────────────────────
+
+export type WelfareCategory =
+  | "Medical"
+  | "Bereavement"
+  | "Family emergency"
+  | "Education"
+  | "Wedding"
+  | "Loan / salary advance"
+  | "Gift / commendation"
+  | "Other";
+
+export type WelfareStatus =
+  | "Pending"      // requested, awaiting approval
+  | "Approved"     // approved, not yet disbursed
+  | "Disbursed"    // money paid out
+  | "Repaying"     // advance, being deducted monthly
+  | "Closed"       // gift fully given OR advance fully repaid
+  | "Rejected";
+
+export interface WelfareRequest {
+  id: string;
+  branch: string;
+  employeeId: string;
+  employeeName: string;
+  category: WelfareCategory;
+  /** ₦ amount requested / approved. */
+  amount: number;
+  reason: string;
+  /** True = recoverable advance against future salary; false = gift / company support. */
+  repayable: boolean;
+  /** When `repayable`, how many monthly instalments to spread the recovery over. */
+  repaymentMonths?: number;
+  /** ₦ already recovered from payslips (set automatically). */
+  amountRepaid: number;
+  requestedAt: number;
+  requestedBy: string;
+  status: WelfareStatus;
+  approvedAt?: number;
+  approvedBy?: string;
+  disbursedAt?: number;
+  disbursedBy?: string;
+  rejectedAt?: number;
+  rejectionReason?: string;
+  closedAt?: number;
+  notes?: string;
+}
+
 // ── Dispatch & fleet ─────────────────────────────────────────────────────────
 
 export type RiderType = "Internal bike" | "3PL partner";
@@ -461,6 +577,42 @@ export interface Rider {
   branch: string;
   status: "Available" | "On delivery" | "Off";
   expenses: number; // accrued fleet cost (fuel, repairs) — internal bikes
+  // Contact / identity (industry-standard rider record)
+  phone: string;
+  nextOfKin?: string;
+  nextOfKinPhone?: string;
+  riderLicence?: string;
+  hireDate?: string;       // ISO date
+  // Bike — only meaningful for internal riders. For aggregator riders it's just informational.
+  bikeMake?: string;       // e.g. "Bajaj Boxer", "Honda CG125"
+  bikePlate?: string;      // e.g. "LAG-123-XY"
+  bikeAcquiredAt?: string; // ISO date
+  bikeAcquisitionCost?: number;  // ₦ — paid to acquire the bike
+}
+
+/** Bike P&L ledger entry — every cash event tied to a rider's bike. */
+export type FleetTxnKind =
+  | "purchase"     // initial bike acquisition (large outflow)
+  | "fuel"         // fuel top-up (outflow)
+  | "maintenance"  // repairs, service, parts (outflow)
+  | "fine"         // traffic fine, towing (outflow)
+  | "delivery-fee" // delivery revenue earned (inflow)
+  | "income"       // misc inflow (compensation for use, rental income)
+  | "expense";     // misc outflow (helmet, insurance)
+
+export interface FleetTxn {
+  id: string;
+  riderId: string;
+  branch: string;
+  at: number;
+  kind: FleetTxnKind;
+  /** Always positive — the `kind` decides whether it's an inflow or outflow. */
+  amount: number;
+  note?: string;
+  /** Linked delivery, when the txn was auto-generated from a completed job. */
+  deliveryId?: string;
+  /** Staff member who logged the txn. */
+  loggedBy: string;
 }
 
 export type DeliveryStatus = "Preparing" | "Ready for pickup" | "Out for delivery" | "Delivered";
@@ -509,6 +661,11 @@ export interface Customer {
   credit: number;
   /** Maximum allowed `credit` balance. `0` means house charges are disabled. */
   creditLimit: number;
+  // ── Delivery convenience ───────────────────────────────────────────────────
+  /** Most-recent delivery address — autofilled when a returning customer reorders. */
+  address?: string;
+  /** Optional landmark / additional address line. */
+  addressLandmark?: string;
 }
 
 /** A line in the customer ledger — top-ups, wallet spends, on-account charges, payments. */
@@ -637,7 +794,7 @@ export interface RestaurantEvent {
 // ── Audit trail ──────────────────────────────────────────────────────────────
 
 export type AuditCategory =
-  | "Sales" | "Inventory" | "Transfers" | "Procurement" | "Finance" | "Payroll" | "HR";
+  | "Sales" | "Inventory" | "Transfers" | "Procurement" | "Finance" | "Payroll" | "HR" | "Security";
 
 /** An immutable who-did-what-when record for every sensitive override. */
 export interface AuditEntry {
@@ -668,6 +825,8 @@ interface StoreState {
   tickets: Ticket[];
   transfers: Transfer[];
   vendors: Vendor[];
+  /** Vendor-side volume-break pricing tables, keyed by `vendorId + sku`. */
+  vendorPricing: VendorSkuPricing[];
   purchaseOrders: PurchaseOrder[];
   priceChanges: PriceChange[];
   batches: Batch[];
@@ -678,8 +837,14 @@ interface StoreState {
   attendance: Attendance[];
   disciplinary: Disciplinary[];
   payrollRuns: PayrollRun[];
+  /** Pre-payroll adjustments (additions + deductions) — folded into the next run for the employee. */
+  payrollAdjustments: PayrollAdjustment[];
+  /** Staff welfare requests, advances, support — separate ledger from petty cash. */
+  welfare: WelfareRequest[];
   riders: Rider[];
   deliveries: DeliveryJob[];
+  /** Append-only ledger of every cash event for each rider's bike (fuel, repairs, delivery fees, etc.). */
+  fleetLedger: FleetTxn[];
   customers: Customer[];
   /** Append-only ledger of customer wallet + credit movements. */
   customerLedger: CustomerLedgerEntry[];
@@ -861,6 +1026,31 @@ const SEED_VENDORS: Vendor[] = [
   { id: "v4", name: "FreshFarm Produce",        contact: "Ada E.",     phone: "+234 807 444 0004", email: "hello@freshfarm.ng",   tin: "42345678-0001", terms: "Net 15", category: "Produce" },
 ];
 
+/**
+ * Vendor volume-break pricing — seeded for three SKUs to demonstrate the
+ * tiered-pricing flow at every level (dry goods, protein, beverage).
+ * Operators can edit / add tiers via /vendors.
+ */
+const SEED_VENDOR_PRICING: VendorSkuPricing[] = [
+  // Basmati rice — ABC Foods sells progressively cheaper per kg in bulk.
+  { id: "VP-seed1", vendorId: "v1", sku: "KIT-RICE", tiers: [
+    { minQty: 1,  unitCost: 2400 },
+    { minQty: 25, unitCost: 2200 },
+    { minQty: 50, unitCost: 2000 },
+  ], note: "Bulk discount kicks in at 25 kg" },
+  // Goat meat — Mama Nkechi offers a small wholesale break at 15 kg.
+  { id: "VP-seed2", vendorId: "v2", sku: "KIT-GOAT", tiers: [
+    { minQty: 1,  unitCost: 5600 },
+    { minQty: 15, unitCost: 5300 },
+  ] },
+  // Heineken — Lagos Beverage Distributors prices per bottle but with case breaks.
+  { id: "VP-seed3", vendorId: "v3", sku: "BAR-HEIN", tiers: [
+    { minQty: 1,   unitCost: 1100 },
+    { minQty: 48,  unitCost: 1050 },
+    { minQty: 144, unitCost: 1000 },
+  ], note: "Better per-bottle from a full case (24) · best at 6 cases (144)" },
+];
+
 const SEED_POS: PurchaseOrder[] = [
   {
     id: "PO-2026-001", vendorId: "v2", branch: HUB_ID, status: "Ordered",
@@ -970,11 +1160,83 @@ const SEED_DISCIPLINARY: Disciplinary[] = [
   { id: "d1", employeeId: "e3", type: "Misconduct", description: "Bar variance −2.4% across three shifts — over-pouring suspected.", action: "Retraining on pour sizes", at: Date.now() - 2 * DAY, by: "Tunde A." },
 ];
 
+const SEED_PAYROLL_ADJUSTMENTS: PayrollAdjustment[] = [
+  // A few pre-payroll adjustments awaiting the next run — illustrates the flow.
+  { id: "PA-seed1", branch: "lekki", employeeId: "e2", employeeName: "Ada O.", kind: "addition",
+    category: "Performance bonus", reason: "Hit November sales target (110% of plan)",
+    amount: 25000, at: Date.now() - 3 * DAY, by: "Tunde A." },
+  { id: "PA-seed2", branch: "lekki", employeeId: "e4", employeeName: "Amara K.", kind: "addition",
+    category: "Overtime", reason: "Weekend banquet · 12 extra hours",
+    amount: 18000, at: Date.now() - 4 * DAY, by: "Tunde A." },
+  { id: "PA-seed3", branch: "lekki", employeeId: "e3", employeeName: "Chukwu B.", kind: "deduction",
+    category: "Damage", reason: "Broken decanter · ₦8,500 replacement",
+    amount: 8500, at: Date.now() - 5 * DAY, by: "Tunde A." },
+];
+
+const SEED_WELFARE: WelfareRequest[] = [
+  // One disbursed advance currently being repaid + one pending request.
+  {
+    id: "WEL-seed1", branch: "lekki", employeeId: "e3", employeeName: "Chukwu B.",
+    category: "Loan / salary advance", amount: 80000, amountRepaid: 20000,
+    reason: "Family emergency — split repayment over 4 months",
+    repayable: true, repaymentMonths: 4,
+    requestedAt: Date.now() - 45 * DAY, requestedBy: "Chukwu B.",
+    approvedAt: Date.now() - 44 * DAY, approvedBy: "Tunde A.",
+    disbursedAt: Date.now() - 44 * DAY, disbursedBy: "Bola F.",
+    status: "Repaying",
+  },
+  {
+    id: "WEL-seed2", branch: "lekki", employeeId: "e5", employeeName: "Eze M.",
+    category: "Medical", amount: 35000, amountRepaid: 0,
+    reason: "Hospital bill for daughter — receipt attached",
+    repayable: false,
+    requestedAt: Date.now() - 1 * DAY, requestedBy: "Eze M.",
+    status: "Pending",
+  },
+];
+
 const SEED_RIDERS: Rider[] = [
-  { id: "r1", name: "Musa O.",   type: "Internal bike", branch: "lekki", status: "Available", expenses: 12000 },
-  { id: "r2", name: "Sani A.",   type: "Internal bike", branch: "lekki", status: "Available", expenses: 8000 },
-  { id: "r3", name: "Chowdeck",  type: "3PL partner",   branch: "lekki", status: "Available", expenses: 0 },
-  { id: "r4", name: "Glovo",     type: "3PL partner",   branch: "lekki", status: "Available", expenses: 0 },
+  {
+    id: "r1", name: "Musa O.", type: "Internal bike", branch: "lekki", status: "Available", expenses: 12000,
+    phone: "+234 803 100 1001", nextOfKin: "Hauwa O.", nextOfKinPhone: "+234 803 100 1002",
+    riderLicence: "LAG-DL-998-XK", hireDate: new Date(Date.now() - 320 * DAY).toISOString().slice(0, 10),
+    bikeMake: "Bajaj Boxer 150", bikePlate: "LAG-127-XY",
+    bikeAcquiredAt: new Date(Date.now() - 280 * DAY).toISOString().slice(0, 10),
+    bikeAcquisitionCost: 850000,
+  },
+  {
+    id: "r2", name: "Sani A.", type: "Internal bike", branch: "lekki", status: "Available", expenses: 8000,
+    phone: "+234 805 200 2002", nextOfKin: "Aisha A.", nextOfKinPhone: "+234 805 200 2003",
+    riderLicence: "LAG-DL-771-ZB", hireDate: new Date(Date.now() - 180 * DAY).toISOString().slice(0, 10),
+    bikeMake: "Honda CG 125", bikePlate: "LAG-441-AB",
+    bikeAcquiredAt: new Date(Date.now() - 150 * DAY).toISOString().slice(0, 10),
+    bikeAcquisitionCost: 720000,
+  },
+  {
+    id: "r3", name: "Chowdeck", type: "3PL partner", branch: "lekki", status: "Available", expenses: 0,
+    phone: "+234 700 246 3325",
+  },
+  {
+    id: "r4", name: "Glovo", type: "3PL partner", branch: "lekki", status: "Available", expenses: 0,
+    phone: "+234 700 245 8686",
+  },
+];
+
+const SEED_FLEET_LEDGER: FleetTxn[] = [
+  // r1 — Bajaj acquisition + last 60 days of fuel, maintenance, delivery fees
+  { id: "F-seed1",  riderId: "r1", branch: "lekki", at: Date.now() - 280 * DAY, kind: "purchase",      amount: 850000, note: "Bajaj Boxer 150 · cash", loggedBy: "Seun O." },
+  { id: "F-seed2",  riderId: "r1", branch: "lekki", at: Date.now() - 28 * DAY, kind: "fuel",          amount: 5000,   note: "Total · 10 L", loggedBy: "Musa O." },
+  { id: "F-seed3",  riderId: "r1", branch: "lekki", at: Date.now() - 20 * DAY, kind: "fuel",          amount: 5000,   note: "Total · 10 L", loggedBy: "Musa O." },
+  { id: "F-seed4",  riderId: "r1", branch: "lekki", at: Date.now() - 14 * DAY, kind: "maintenance",   amount: 2000,   note: "Oil change", loggedBy: "Musa O." },
+  { id: "F-seed5",  riderId: "r1", branch: "lekki", at: Date.now() - 8 * DAY,  kind: "delivery-fee",  amount: 1500,   note: "Delivery DEL-arch1", deliveryId: "DEL-arch1", loggedBy: "Ada O." },
+  { id: "F-seed6",  riderId: "r1", branch: "lekki", at: Date.now() - 5 * DAY,  kind: "delivery-fee",  amount: 1500,   note: "Delivery DEL-arch2", deliveryId: "DEL-arch2", loggedBy: "Ada O." },
+  { id: "F-seed7",  riderId: "r1", branch: "lekki", at: Date.now() - 3 * DAY,  kind: "delivery-fee",  amount: 1500,   note: "Delivery DEL-arch3", deliveryId: "DEL-arch3", loggedBy: "Ada O." },
+  { id: "F-seed8",  riderId: "r1", branch: "lekki", at: Date.now() - 2 * DAY,  kind: "fuel",          amount: 5000,   note: "Total · 10 L", loggedBy: "Musa O." },
+  // r2 — Honda + fuel + delivery fees
+  { id: "F-seed9",  riderId: "r2", branch: "lekki", at: Date.now() - 150 * DAY, kind: "purchase",     amount: 720000, note: "Honda CG 125 · cash", loggedBy: "Seun O." },
+  { id: "F-seed10", riderId: "r2", branch: "lekki", at: Date.now() - 7 * DAY,  kind: "fuel",          amount: 4000,   note: "8 L", loggedBy: "Sani A." },
+  { id: "F-seed11", riderId: "r2", branch: "lekki", at: Date.now() - 4 * DAY,  kind: "delivery-fee",  amount: 1500,   loggedBy: "Ada O." },
+  { id: "F-seed12", riderId: "r2", branch: "lekki", at: Date.now() - 1 * DAY,  kind: "maintenance",   amount: 4000,   note: "Tyre patch", loggedBy: "Sani A." },
 ];
 
 const SEED_DELIVERIES: DeliveryJob[] = [
@@ -1120,6 +1382,7 @@ const SEED_STATE: StoreState = {
   tickets: SEED_TICKETS,
   transfers: SEED_TRANSFERS,
   vendors: SEED_VENDORS,
+  vendorPricing: SEED_VENDOR_PRICING,
   purchaseOrders: SEED_POS,
   priceChanges: SEED_PRICE_CHANGES,
   batches: SEED_BATCHES,
@@ -1130,8 +1393,11 @@ const SEED_STATE: StoreState = {
   attendance: SEED_ATTENDANCE,
   disciplinary: SEED_DISCIPLINARY,
   payrollRuns: [],
+  payrollAdjustments: SEED_PAYROLL_ADJUSTMENTS,
+  welfare: SEED_WELFARE,
   riders: SEED_RIDERS,
   deliveries: SEED_DELIVERIES,
+  fleetLedger: SEED_FLEET_LEDGER,
   customers: SEED_CUSTOMERS,
   customerLedger: SEED_LEDGER,
   customerInvoices: SEED_INVOICES,
@@ -1194,6 +1460,10 @@ interface StoreValue extends StoreState {
   // tables & kitchen/bar tickets
   seatTable: (id: string, guests: number) => void;
   freeTable: (id: string) => void;
+  // Floor-plan management — owner/manager set up tables for the branch.
+  addTable: (input: { label: string; zone: string; seats: number }) => { ok: boolean; error?: string; table?: TableRec };
+  updateTable: (id: string, patch: { label?: string; zone?: string; seats?: number }) => { ok: boolean; error?: string };
+  removeTable: (id: string) => { ok: boolean; error?: string };
   advanceTicket: (id: string) => void;
   markTicketReady: (id: string) => void;
   // strong-room transfers
@@ -1209,6 +1479,9 @@ interface StoreValue extends StoreState {
   rejectPO: (id: string, by: string) => void;
   receivePO: (id: string, received: { sku: string; qtyReceived: number; unitCost: number; expiry?: string }[], by: string) => void;
   markPOPaid: (id: string) => void;
+  // Vendor volume-break pricing — tiered cost per SKU per vendor
+  upsertVendorPricing: (input: { vendorId: string; sku: string; tiers: VendorPriceTier[]; note?: string }) => { ok: boolean; error?: string };
+  removeVendorPricing: (id: string) => { ok: boolean; error?: string };
   // expenses & petty cash
   walletOf: (branch: string) => Wallet | undefined;
   requestExpense: (input: { category: string; amount: number; description: string; by: string }) => ExpenseRequest;
@@ -1226,8 +1499,19 @@ interface StoreValue extends StoreState {
   clockOut: (employeeId: string) => void;
   logDisciplinary: (input: { employeeId: string; type: IncidentType; description: string; action: string; by: string }) => void;
   runPayroll: (period: string, by: string) => PayrollRun;
+  // Payroll adjustments — manual additions / deductions queued for the next run
+  addPayrollAdjustment: (input: { employeeId: string; kind: "addition" | "deduction"; category: string; reason: string; amount: number; by: string }) => { ok: boolean; error?: string; entry?: PayrollAdjustment };
+  removePayrollAdjustment: (id: string) => { ok: boolean; error?: string };
+  // Staff welfare — requests, approvals, disbursements
+  requestWelfare: (input: { employeeId: string; category: WelfareCategory; amount: number; reason: string; repayable: boolean; repaymentMonths?: number; by: string }) => { ok: boolean; error?: string; entry?: WelfareRequest };
+  approveWelfare: (id: string, by: string) => { ok: boolean; error?: string };
+  rejectWelfare: (id: string, reason: string, by: string) => { ok: boolean; error?: string };
+  disburseWelfare: (id: string, by: string) => { ok: boolean; error?: string };
+  closeWelfare: (id: string, by: string) => { ok: boolean; error?: string };
   // dispatch & fleet
-  addRider: (input: { name: string; type: RiderType }) => Rider;
+  addRider: (input: { name: string; type: RiderType; phone: string; nextOfKin?: string; nextOfKinPhone?: string; riderLicence?: string; bikeMake?: string; bikePlate?: string; bikeAcquisitionCost?: number; hireDate?: string }) => Rider;
+  /** Append a fleet-ledger txn (fuel, maintenance, delivery fee, etc.). Returns the txn. */
+  logFleetTxn: (input: { riderId: string; kind: FleetTxnKind; amount: number; note?: string; deliveryId?: string; by: string }) => FleetTxn;
   setRiderStatus: (id: string, status: Rider["status"]) => void;
   advanceDelivery: (id: string) => void;
   assignDelivery: (id: string, riderId: string) => void;
@@ -1261,7 +1545,7 @@ interface StoreValue extends StoreState {
 
 const StoreContext = createContext<StoreValue | null>(null);
 
-const STORAGE_KEY = "haven11_store_v19";
+const STORAGE_KEY = "haven11_store_v22";
 
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
@@ -1759,6 +2043,52 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  const addTable = useCallback<StoreValue["addTable"]>((input) => {
+    const label = input.label.trim();
+    const zone = input.zone.trim();
+    const seats = Math.round(input.seats);
+    if (!label) return { ok: false, error: "Enter a table label" };
+    if (!zone) return { ok: false, error: "Enter a zone" };
+    if (seats <= 0) return { ok: false, error: "Seats must be greater than zero" };
+    if (stateRef.current.tables.some((t) => t.label.toLowerCase() === label.toLowerCase())) {
+      return { ok: false, error: `"${label}" already exists` };
+    }
+    const table: TableRec = { id: uid("T"), label, zone, seats, status: "available" };
+    setState((p) => ({ ...p, tables: [...p.tables, table] }));
+    return { ok: true, table };
+  }, []);
+
+  const updateTable = useCallback<StoreValue["updateTable"]>((id, patch) => {
+    const current = stateRef.current.tables.find((t) => t.id === id);
+    if (!current) return { ok: false, error: "Table not found" };
+    const label = patch.label?.trim();
+    if (label !== undefined) {
+      if (!label) return { ok: false, error: "Label can't be empty" };
+      if (stateRef.current.tables.some((t) => t.id !== id && t.label.toLowerCase() === label.toLowerCase())) {
+        return { ok: false, error: `"${label}" already exists` };
+      }
+    }
+    const seats = patch.seats != null ? Math.round(patch.seats) : undefined;
+    if (seats != null && seats <= 0) return { ok: false, error: "Seats must be greater than zero" };
+    setState((p) => ({
+      ...p,
+      tables: p.tables.map((t) => t.id === id
+        ? { ...t, ...(label !== undefined && { label }), ...(patch.zone !== undefined && { zone: patch.zone.trim() }), ...(seats != null && { seats }) }
+        : t),
+    }));
+    return { ok: true };
+  }, []);
+
+  const removeTable = useCallback<StoreValue["removeTable"]>((id) => {
+    const current = stateRef.current.tables.find((t) => t.id === id);
+    if (!current) return { ok: false, error: "Table not found" };
+    if (current.status !== "available") {
+      return { ok: false, error: `Can't remove a table that is currently ${current.status}` };
+    }
+    setState((p) => ({ ...p, tables: p.tables.filter((t) => t.id !== id) }));
+    return { ok: true };
+  }, []);
+
   const advanceTicket = useCallback<StoreValue["advanceTicket"]>((id) => {
     setState((p) => ({
       ...p,
@@ -1968,6 +2298,53 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     const created: Vendor = { ...v, id: uid("v") };
     setState((p) => ({ ...p, vendors: [created, ...p.vendors] }));
     return created;
+  }, []);
+
+  /**
+   * Save a tiered price for one vendor-SKU pair. Replaces any existing entry
+   * (so editing tiers is just an `upsert`). Tiers are sorted by `minQty` and
+   * validated: at least one tier, every `minQty ≥ 1`, every `unitCost > 0`.
+   */
+  const upsertVendorPricing = useCallback<StoreValue["upsertVendorPricing"]>((input) => {
+    if (!input.vendorId) return { ok: false, error: "Vendor is required" };
+    if (!input.sku) return { ok: false, error: "SKU is required" };
+    const cleanTiers = input.tiers
+      .map((t) => ({ minQty: Math.max(1, Math.round(t.minQty)), unitCost: Math.max(0, Math.round(t.unitCost)) }))
+      .filter((t) => t.unitCost > 0);
+    if (cleanTiers.length === 0) return { ok: false, error: "At least one price tier is required" };
+    cleanTiers.sort((a, b) => a.minQty - b.minQty);
+    // De-duplicate identical minQty by keeping the cheaper unit cost.
+    const dedup: VendorPriceTier[] = [];
+    for (const t of cleanTiers) {
+      const last = dedup[dedup.length - 1];
+      if (last && last.minQty === t.minQty) {
+        if (t.unitCost < last.unitCost) last.unitCost = t.unitCost;
+      } else {
+        dedup.push(t);
+      }
+    }
+    const existing = stateRef.current.vendorPricing.find((p) => p.vendorId === input.vendorId && p.sku === input.sku);
+    const entry: VendorSkuPricing = {
+      id: existing?.id ?? uid("VP"),
+      vendorId: input.vendorId,
+      sku: input.sku,
+      tiers: dedup,
+      note: input.note?.trim() || undefined,
+    };
+    setState((p) => ({
+      ...p,
+      vendorPricing: existing
+        ? p.vendorPricing.map((x) => x.id === existing.id ? entry : x)
+        : [entry, ...p.vendorPricing],
+    }));
+    return { ok: true };
+  }, []);
+
+  const removeVendorPricing = useCallback<StoreValue["removeVendorPricing"]>((id) => {
+    const exists = stateRef.current.vendorPricing.some((p) => p.id === id);
+    if (!exists) return { ok: false, error: "Pricing not found" };
+    setState((p) => ({ ...p, vendorPricing: p.vendorPricing.filter((x) => x.id !== id) }));
+    return { ok: true };
   }, []);
 
   const createPO = useCallback<StoreValue["createPO"]>((input) => {
@@ -2303,26 +2680,96 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     const s = stateRef.current;
     const branch = s.currentBranch;
     const emps = s.employees.filter((e) => e.branch === branch && e.status === "Active");
+
+    // Track which adjustments + welfare repayments get consumed by this run so
+    // we can mark them after the payslips are built.
+    const consumedAdjustmentIds: string[] = [];
+    const welfareInstalments: { welfareId: string; amount: number }[] = [];
+
     const payslips: Payslip[] = emps.map((e) => {
       const base = e.baseSalary;
       const allowances = e.transport + e.housing;
       const gross = base + allowances;
+
+      // ── Statutory deductions (always present) ──
+      const paye = Math.round(gross * 0.08);
+      const pension = Math.round(base * 0.08);
+      const nhf = Math.round(base * 0.025);
+
+      // ── Itemised additions + deductions (each with reason) ──
+      const additions: PayslipAdjustment[] = [];
+      const deductions: PayslipAdjustment[] = [];
+
+      // (1) Auto-deduction — lateness in this period.
       const lateMarks = s.attendance.filter((a) => a.employeeId === e.id && a.lateMinutes >= 15).length;
-      const latenessDeduction = lateMarks * 500;
-      // Shortages: negative shift variances under this person's name (Finance ↔ HR).
-      let shortageDeduction = 0;
+      if (lateMarks > 0) {
+        const amt = lateMarks * 500;
+        deductions.push({
+          id: uid("PSA"), kind: "deduction", category: "Lateness",
+          reason: `${lateMarks} day${lateMarks === 1 ? "" : "s"} flagged late (≥15 min) at ₦500 each`,
+          amount: amt, source: "lateness",
+        });
+      }
+
+      // (2) Auto-deduction — cash shortages charged to this person across shifts.
+      let shortage = 0;
+      const shortShifts: string[] = [];
       for (const sh of s.shifts) {
         if (sh.staffName !== e.name || sh.countedCash == null) continue;
         const sales = sh.seedSales ?? s.orders.filter((o) => o.shiftId === sh.id && !o.voided && o.status === "Closed").reduce((sum, o) => sum + o.total, 0);
         const variance = sh.countedCash - (sh.openingFloat + sales);
-        if (variance < 0) shortageDeduction += -variance;
+        if (variance < 0) { shortage += -variance; shortShifts.push(sh.id); }
       }
-      const paye = Math.round(gross * 0.08);
-      const pension = Math.round(base * 0.08);
-      const nhf = Math.round(base * 0.025);
-      const net = gross - paye - pension - nhf - latenessDeduction - shortageDeduction;
-      return { employeeId: e.id, name: e.name, role: e.role, base, allowances, gross, paye, pension, nhf, latenessDeduction, shortageDeduction, net };
+      if (shortage > 0) {
+        deductions.push({
+          id: uid("PSA"), kind: "deduction", category: "Cash shortage",
+          reason: `Cash shortfall across ${shortShifts.length} shift${shortShifts.length === 1 ? "" : "s"} (${shortShifts.join(", ")})`,
+          amount: shortage, source: "shortage",
+        });
+      }
+
+      // (3) Pending manual adjustments queued for this employee (bonuses + deductions).
+      const pendingForMe = s.payrollAdjustments.filter(
+        (a) => a.branch === branch && a.employeeId === e.id && a.consumedByRunId == null,
+      );
+      for (const a of pendingForMe) {
+        const line: PayslipAdjustment = {
+          id: uid("PSA"), kind: a.kind, category: a.category, reason: a.reason, amount: a.amount, source: "manual",
+        };
+        if (a.kind === "addition") additions.push(line); else deductions.push(line);
+        consumedAdjustmentIds.push(a.id);
+      }
+
+      // (4) Welfare-advance repayments — auto-deduct one instalment per pay run.
+      const repaying = s.welfare.filter(
+        (w) => w.branch === branch && w.employeeId === e.id && w.status === "Repaying" && w.repayable,
+      );
+      for (const w of repaying) {
+        const months = Math.max(1, w.repaymentMonths ?? 1);
+        const perMonth = Math.round(w.amount / months);
+        const remaining = w.amount - w.amountRepaid;
+        const instalment = Math.min(perMonth, remaining);
+        if (instalment > 0) {
+          deductions.push({
+            id: uid("PSA"), kind: "deduction", category: "Welfare advance",
+            reason: `Instalment ${Math.floor(w.amountRepaid / perMonth) + 1} of ${months} · ${w.id} · ${w.category}`,
+            amount: instalment, source: "welfare-repayment", welfareId: w.id,
+          });
+          welfareInstalments.push({ welfareId: w.id, amount: instalment });
+        }
+      }
+
+      const totalAdditions = additions.reduce((sum, a) => sum + a.amount, 0);
+      const itemisedDeductions = deductions.reduce((sum, d) => sum + d.amount, 0);
+      const totalDeductions = paye + pension + nhf + itemisedDeductions;
+      const net = gross + totalAdditions - totalDeductions;
+
+      return {
+        employeeId: e.id, name: e.name, role: e.role, base, allowances, gross,
+        paye, pension, nhf, additions, deductions, totalAdditions, totalDeductions, net,
+      };
     });
+
     const created: PayrollRun = {
       id: uid("PR"), period, ranAt: Date.now(), ranBy: by, branch,
       payslips, totalNet: payslips.reduce((sum, ps) => sum + ps.net, 0),
@@ -2332,19 +2779,198 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       detail: `${period} · ${payslips.length} employee${payslips.length !== 1 ? "s" : ""} · net ₦${created.totalNet.toLocaleString()}`,
       ref: created.id, amount: created.totalNet, severity: "warning",
     });
-    setState((p) => ({ ...p, payrollRuns: [created, ...p.payrollRuns], auditLog: [entry, ...p.auditLog] }));
+    setState((p) => ({
+      ...p,
+      payrollRuns: [created, ...p.payrollRuns],
+      // Mark consumed adjustments + apply welfare instalments.
+      payrollAdjustments: p.payrollAdjustments.map((a) =>
+        consumedAdjustmentIds.includes(a.id) ? { ...a, consumedByRunId: created.id } : a),
+      welfare: p.welfare.map((w) => {
+        const total = welfareInstalments.filter((wi) => wi.welfareId === w.id).reduce((s, x) => s + x.amount, 0);
+        if (total === 0) return w;
+        const nextRepaid = w.amountRepaid + total;
+        const cleared = nextRepaid >= w.amount;
+        return {
+          ...w,
+          amountRepaid: nextRepaid,
+          status: cleared ? "Closed" : w.status,
+          closedAt: cleared ? Date.now() : w.closedAt,
+        };
+      }),
+      auditLog: [entry, ...p.auditLog],
+    }));
     return created;
+  }, []);
+
+  // ── Payroll adjustments ───────────────────────────────────────────────────
+
+  const addPayrollAdjustment = useCallback<StoreValue["addPayrollAdjustment"]>((input) => {
+    const branch = stateRef.current.currentBranch;
+    const emp = stateRef.current.employees.find((e) => e.id === input.employeeId);
+    if (!emp) return { ok: false, error: "Employee not found" };
+    const amt = Math.round(input.amount);
+    if (amt <= 0) return { ok: false, error: "Amount must be positive" };
+    if (!input.reason.trim()) return { ok: false, error: "Reason is required" };
+    const entry: PayrollAdjustment = {
+      id: uid("PA"), branch, employeeId: emp.id, employeeName: emp.name,
+      kind: input.kind, category: input.category, reason: input.reason.trim(), amount: amt,
+      at: Date.now(), by: input.by,
+    };
+    const audit_ = audit({
+      branch, actor: input.by, category: "Payroll",
+      action: input.kind === "addition" ? "Payroll bonus queued" : "Payroll deduction queued",
+      detail: `${emp.name} · ${input.category} · ${input.kind === "addition" ? "+" : "−"}₦${amt.toLocaleString()} · ${input.reason.trim()}`,
+      ref: entry.id, amount: amt, severity: "info",
+    });
+    setState((p) => ({ ...p, payrollAdjustments: [entry, ...p.payrollAdjustments], auditLog: [audit_, ...p.auditLog] }));
+    return { ok: true, entry };
+  }, []);
+
+  const removePayrollAdjustment = useCallback<StoreValue["removePayrollAdjustment"]>((id) => {
+    const a = stateRef.current.payrollAdjustments.find((x) => x.id === id);
+    if (!a) return { ok: false, error: "Adjustment not found" };
+    if (a.consumedByRunId) return { ok: false, error: "Already applied to a payroll run — cannot remove" };
+    setState((p) => ({ ...p, payrollAdjustments: p.payrollAdjustments.filter((x) => x.id !== id) }));
+    return { ok: true };
+  }, []);
+
+  // ── Staff welfare ─────────────────────────────────────────────────────────
+
+  const requestWelfare = useCallback<StoreValue["requestWelfare"]>((input) => {
+    const branch = stateRef.current.currentBranch;
+    const emp = stateRef.current.employees.find((e) => e.id === input.employeeId);
+    if (!emp) return { ok: false, error: "Employee not found" };
+    if (input.amount <= 0) return { ok: false, error: "Amount must be positive" };
+    if (!input.reason.trim()) return { ok: false, error: "Reason is required" };
+    if (input.repayable && (input.repaymentMonths == null || input.repaymentMonths <= 0)) {
+      return { ok: false, error: "Salary advances need a repayment plan (1+ months)" };
+    }
+    const entry: WelfareRequest = {
+      id: uid("WEL"), branch, employeeId: emp.id, employeeName: emp.name,
+      category: input.category, amount: Math.round(input.amount), reason: input.reason.trim(),
+      repayable: input.repayable, repaymentMonths: input.repayable ? input.repaymentMonths : undefined,
+      amountRepaid: 0,
+      requestedAt: Date.now(), requestedBy: input.by, status: "Pending",
+    };
+    const audit_ = audit({
+      branch, actor: input.by, category: "HR", action: "Welfare requested",
+      detail: `${emp.name} · ${input.category} · ₦${entry.amount.toLocaleString()} · ${input.reason.trim()}`,
+      ref: entry.id, amount: entry.amount, severity: "info",
+    });
+    setState((p) => ({ ...p, welfare: [entry, ...p.welfare], auditLog: [audit_, ...p.auditLog] }));
+    return { ok: true, entry };
+  }, []);
+
+  const approveWelfare = useCallback<StoreValue["approveWelfare"]>((id, by) => {
+    const w = stateRef.current.welfare.find((x) => x.id === id);
+    if (!w) return { ok: false, error: "Request not found" };
+    if (w.status !== "Pending") return { ok: false, error: `Already ${w.status.toLowerCase()}` };
+    const audit_ = audit({
+      branch: w.branch, actor: by, category: "HR", action: "Welfare approved",
+      detail: `${w.employeeName} · ${w.id} · ₦${w.amount.toLocaleString()}`, ref: w.id, amount: w.amount, severity: "info",
+    });
+    setState((p) => ({
+      ...p,
+      welfare: p.welfare.map((x) => x.id === id ? { ...x, status: "Approved", approvedAt: Date.now(), approvedBy: by } : x),
+      auditLog: [audit_, ...p.auditLog],
+    }));
+    return { ok: true };
+  }, []);
+
+  const rejectWelfare = useCallback<StoreValue["rejectWelfare"]>((id, reason, by) => {
+    const w = stateRef.current.welfare.find((x) => x.id === id);
+    if (!w) return { ok: false, error: "Request not found" };
+    if (w.status !== "Pending") return { ok: false, error: `Already ${w.status.toLowerCase()}` };
+    const audit_ = audit({
+      branch: w.branch, actor: by, category: "HR", action: "Welfare rejected",
+      detail: `${w.employeeName} · ${w.id} · ${reason}`, ref: w.id, severity: "warning",
+    });
+    setState((p) => ({
+      ...p,
+      welfare: p.welfare.map((x) => x.id === id ? { ...x, status: "Rejected", rejectedAt: Date.now(), rejectionReason: reason } : x),
+      auditLog: [audit_, ...p.auditLog],
+    }));
+    return { ok: true };
+  }, []);
+
+  const disburseWelfare = useCallback<StoreValue["disburseWelfare"]>((id, by) => {
+    const w = stateRef.current.welfare.find((x) => x.id === id);
+    if (!w) return { ok: false, error: "Request not found" };
+    if (w.status !== "Approved") return { ok: false, error: `Can only disburse approved requests (currently ${w.status})` };
+    // Repayable → "Repaying"; otherwise straight to "Disbursed" (will close on closeWelfare).
+    const next: WelfareStatus = w.repayable ? "Repaying" : "Disbursed";
+    const audit_ = audit({
+      branch: w.branch, actor: by, category: "HR",
+      action: w.repayable ? "Welfare advance disbursed" : "Welfare support disbursed",
+      detail: `${w.employeeName} · ${w.id} · ₦${w.amount.toLocaleString()}${w.repayable ? ` · ${w.repaymentMonths}-month repayment` : ""}`,
+      ref: w.id, amount: w.amount, severity: "warning",
+    });
+    setState((p) => ({
+      ...p,
+      welfare: p.welfare.map((x) => x.id === id ? { ...x, status: next, disbursedAt: Date.now(), disbursedBy: by } : x),
+      auditLog: [audit_, ...p.auditLog],
+    }));
+    return { ok: true };
+  }, []);
+
+  const closeWelfare = useCallback<StoreValue["closeWelfare"]>((id, by) => {
+    const w = stateRef.current.welfare.find((x) => x.id === id);
+    if (!w) return { ok: false, error: "Request not found" };
+    if (w.status === "Closed" || w.status === "Rejected") return { ok: false, error: "Already closed" };
+    const audit_ = audit({
+      branch: w.branch, actor: by, category: "HR", action: "Welfare closed",
+      detail: `${w.employeeName} · ${w.id}`, ref: w.id, severity: "info",
+    });
+    setState((p) => ({
+      ...p,
+      welfare: p.welfare.map((x) => x.id === id ? { ...x, status: "Closed", closedAt: Date.now() } : x),
+      auditLog: [audit_, ...p.auditLog],
+    }));
+    return { ok: true };
   }, []);
 
   // ── Dispatch & fleet ───────────────────────────────────────────────────────
 
   const addRider = useCallback<StoreValue["addRider"]>((input) => {
+    const branch = stateRef.current.currentBranch;
     const created: Rider = {
-      id: uid("r"), name: input.name, type: input.type,
-      branch: stateRef.current.currentBranch, status: "Available", expenses: 0,
+      id: uid("r"), name: input.name, type: input.type, branch, status: "Available", expenses: 0,
+      phone: input.phone,
+      nextOfKin: input.nextOfKin, nextOfKinPhone: input.nextOfKinPhone,
+      riderLicence: input.riderLicence, hireDate: input.hireDate,
+      bikeMake: input.bikeMake, bikePlate: input.bikePlate,
+      bikeAcquiredAt: input.bikeAcquisitionCost ? new Date().toISOString().slice(0, 10) : undefined,
+      bikeAcquisitionCost: input.bikeAcquisitionCost,
     };
-    setState((p) => ({ ...p, riders: [created, ...p.riders] }));
+    // Mirror the bike purchase into the fleet ledger so the P&L stays accurate.
+    const txns: FleetTxn[] = input.bikeAcquisitionCost
+      ? [{
+          id: uid("F"), riderId: created.id, branch, at: Date.now(),
+          kind: "purchase", amount: input.bikeAcquisitionCost,
+          note: `Bike acquisition${input.bikeMake ? ` · ${input.bikeMake}` : ""}${input.bikePlate ? ` · ${input.bikePlate}` : ""}`,
+          loggedBy: stateRef.current.employees.find(() => true)?.name ?? "Owner",
+        }]
+      : [];
+    setState((p) => ({ ...p, riders: [created, ...p.riders], fleetLedger: [...txns, ...p.fleetLedger] }));
     return created;
+  }, []);
+
+  const logFleetTxn = useCallback<StoreValue["logFleetTxn"]>((input) => {
+    const branch = stateRef.current.currentBranch;
+    const txn: FleetTxn = {
+      id: uid("F"), riderId: input.riderId, branch, at: Date.now(),
+      kind: input.kind, amount: Math.round(input.amount), note: input.note,
+      deliveryId: input.deliveryId, loggedBy: input.by,
+    };
+    setState((p) => ({
+      ...p,
+      fleetLedger: [txn, ...p.fleetLedger],
+      // Outflows accrue to the rider's `expenses` field (kept in sync for legacy reads).
+      riders: (input.kind === "purchase" || input.kind === "fuel" || input.kind === "maintenance" || input.kind === "fine" || input.kind === "expense")
+        ? p.riders.map((r) => r.id === input.riderId ? { ...r, expenses: r.expenses + txn.amount } : r)
+        : p.riders,
+    }));
+    return txn;
   }, []);
 
   const setRiderStatus = useCallback<StoreValue["setRiderStatus"]>((id, status) => {
@@ -2383,9 +3009,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       const stillOut = job.riderId
         ? deliveries.some((d) => d.riderId === job.riderId && d.status === "Out for delivery")
         : false;
+      // Auto-credit the rider's bike P&L with the delivery fee — keeps the
+      // ledger truthful without anyone having to remember to log it.
+      const earnTxn: FleetTxn[] = (job.riderId && job.fee > 0)
+        ? [{
+            id: uid("F"), riderId: job.riderId, branch: job.branch, at: Date.now(),
+            kind: "delivery-fee", amount: job.fee, deliveryId: job.id,
+            note: `Delivery ${job.id}`, loggedBy: "System",
+          }]
+        : [];
       return {
         ...p,
         deliveries,
+        fleetLedger: [...earnTxn, ...p.fleetLedger],
         riders: job.riderId && !stillOut
           ? p.riders.map((r) => (r.id === job.riderId ? { ...r, status: "Available" } : r))
           : p.riders,
@@ -2796,12 +3432,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       addCategory, renameCategory, removeCategory,
       requestStock, issueStockRequest,
       addMenuItem, updateMenuItem, importMenu, recipeCost,
-      seatTable, freeTable, advanceTicket, markTicketReady,
+      seatTable, freeTable, addTable, updateTable, removeTable, advanceTicket, markTicketReady,
       requestTransfer, approveTransfer, rejectTransfer, issueTransfer, receiveTransfer,
       addVendor, createPO, approvePO, rejectPO, receivePO, markPOPaid,
+      upsertVendorPricing, removeVendorPricing,
       walletOf, requestExpense, approveExpense, rejectExpense, disburseExpense, reconcileExpense, topUpWallet,
       addEmployee, updateEmployee, offboardEmployee, reactivateEmployee, clockIn, clockOut, logDisciplinary, runPayroll,
-      addRider, setRiderStatus, advanceDelivery, assignDelivery, completeDelivery, settleCOD, logFleetExpense,
+      addPayrollAdjustment, removePayrollAdjustment,
+      requestWelfare, approveWelfare, rejectWelfare, disburseWelfare, closeWelfare,
+      addRider, logFleetTxn, setRiderStatus, advanceDelivery, assignDelivery, completeDelivery, settleCOD, logFleetExpense,
       addCustomer, updateCustomer, recordFeedback, addComplaint, setComplaintStatus, contactCustomer,
       topUpCustomerWallet, spendCustomerWallet, chargeCustomerAccount, recordCustomerPayment,
       setCustomerCreditLimit, generateCustomerInvoice, sendInvoiceReminder, voidInvoice,
@@ -2814,12 +3453,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
      addCategory, renameCategory, removeCategory,
      requestStock, issueStockRequest,
      addMenuItem, updateMenuItem, importMenu, recipeCost,
-     seatTable, freeTable, advanceTicket, markTicketReady,
+     seatTable, freeTable, addTable, updateTable, removeTable, advanceTicket, markTicketReady,
      requestTransfer, approveTransfer, rejectTransfer, issueTransfer, receiveTransfer,
      addVendor, createPO, approvePO, rejectPO, receivePO, markPOPaid,
+     upsertVendorPricing, removeVendorPricing,
      walletOf, requestExpense, approveExpense, rejectExpense, disburseExpense, reconcileExpense, topUpWallet,
      addEmployee, updateEmployee, offboardEmployee, reactivateEmployee, clockIn, clockOut, logDisciplinary, runPayroll,
-     addRider, setRiderStatus, advanceDelivery, assignDelivery, completeDelivery, settleCOD, logFleetExpense,
+     addPayrollAdjustment, removePayrollAdjustment,
+     requestWelfare, approveWelfare, rejectWelfare, disburseWelfare, closeWelfare,
+     addRider, logFleetTxn, setRiderStatus, advanceDelivery, assignDelivery, completeDelivery, settleCOD, logFleetExpense,
      addCustomer, updateCustomer, recordFeedback, addComplaint, setComplaintStatus, contactCustomer,
      topUpCustomerWallet, spendCustomerWallet, chargeCustomerAccount, recordCustomerPayment,
      setCustomerCreditLimit, generateCustomerInvoice, sendInvoiceReminder, voidInvoice,
@@ -2869,8 +3511,53 @@ export function agingBucket(daysOverdue: number): "Current" | "1-30" | "31-60" |
   return "90+";
 }
 
+/**
+ * Resolve the unit cost for a vendor-SKU pair at a given order quantity, plus
+ * the next tier (if any) so the UI can hint *"Add N more units to save ₦X"*.
+ * Returns `unitCost: null` when no pricing is on file for this pair.
+ */
+export function priceForQty(
+  pricings: VendorSkuPricing[],
+  vendorId: string,
+  sku: string,
+  qty: number,
+): { unitCost: number | null; activeTier: VendorPriceTier | null; nextTier: VendorPriceTier | null } {
+  const p = pricings.find((x) => x.vendorId === vendorId && x.sku === sku);
+  if (!p || p.tiers.length === 0) return { unitCost: null, activeTier: null, nextTier: null };
+  const sorted = [...p.tiers].sort((a, b) => a.minQty - b.minQty);
+  let active: VendorPriceTier | null = null;
+  let next: VendorPriceTier | null = null;
+  for (const t of sorted) {
+    if (t.minQty <= qty) active = t;
+    else if (next == null) next = t;
+  }
+  return { unitCost: active?.unitCost ?? sorted[0].unitCost, activeTier: active ?? sorted[0], nextTier: next };
+}
+
 export function fmtQty(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, "");
+}
+
+/**
+ * Industry-standard "suggested order quantity" — stock up to 2× the par level
+ * so the next consumption cycle has buffer. Rounded to a nice number to avoid
+ * fractional cases (3.7 kg → 4 kg). Returns `0` when the item isn't low.
+ *
+ * The Toast / Lightspeed / NRA rule of thumb. Adjustable upstream by capping
+ * against source availability (a branch shouldn't request more than the
+ * Strong Room has on hand).
+ */
+export function suggestedRestockQty(item: InventoryItem): number {
+  if (item.onHand > item.reorder) return 0;
+  const target = item.reorder * 2;
+  const need = target - item.onHand;
+  if (need <= 0) return 0;
+  // Round up to the nearest sensible step for the unit type.
+  if (item.unit === "pcs" || item.unit === "btl" || item.unit === "bunch" || item.unit === "cans" || item.unit === "bag") {
+    return Math.ceil(need);
+  }
+  // kg / L / other continuous units — round up to one decimal.
+  return Math.ceil(need * 10) / 10;
 }
 
 export function statusOf(item: InventoryItem): "OK" | "Low" | "Out" {

@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   Plus, Minus, Trash2, CreditCard, Banknote, Smartphone,
   CheckCircle2, ChevronLeft, Users, ShoppingBag, Bike, SlidersHorizontal, Tag, X,
+  Star, MapPin, Utensils, ChevronRight,
 } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { Modal, ModalButton } from "@/components/Modal";
@@ -92,6 +93,10 @@ export default function POS() {
   const [seatingTable, setSeatingTable] = useState<TableRec | null>(null);
   const [service, setService] = useState<ServiceOrder | null>(null);
   const [serviceModal, setServiceModal] = useState<"Takeout" | "Delivery" | null>(null);
+  // The start screen shows the three service-type tiles (Dine in / Takeout / Delivery).
+  // Picking Dine in expands into the floor plan; the others open the customer-capture
+  // modal directly. Keeps the start screen scannable for new staff.
+  const [floorPlanOpen, setFloorPlanOpen] = useState(false);
   const [cat, setCat] = useState("All");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [customizing, setCustomizing] = useState<CartItem | null>(null);
@@ -299,22 +304,13 @@ export default function POS() {
     const heldOrders = store.orders.filter((o) => o.status === "On hold" && o.branch === store.currentBranch && !o.voided);
 
     return (
-      <AppShell title="Start an order" subtitle="Pick a table, open a tab, or start a takeout / delivery order">
+      <AppShell
+        title={floorPlanOpen ? "Dine in · pick a table" : "Start an order"}
+        subtitle={floorPlanOpen ? "Tap an open table to seat guests" : "Pick how the guest is being served"}
+      >
         <div className="space-y-6 max-w-3xl">
-          <section>
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 px-0.5">Takeout &amp; Delivery</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button type="button" onClick={() => setServiceModal("Takeout")} className="flex items-center gap-4 rounded-2xl border-2 border-primary/30 bg-primary/5 p-4 text-left hover:border-primary/60 hover:bg-primary/10 transition-all active:scale-[0.97]">
-                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground"><ShoppingBag className="h-6 w-6" strokeWidth={1.75} /></span>
-                <span><span className="block text-sm font-bold">Takeout</span><span className="block text-xs text-muted-foreground">Customer collects · capture name &amp; phone</span></span>
-              </button>
-              <button type="button" onClick={() => setServiceModal("Delivery")} className="flex items-center gap-4 rounded-2xl border-2 border-primary/30 bg-primary/5 p-4 text-left hover:border-primary/60 hover:bg-primary/10 transition-all active:scale-[0.97]">
-                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground"><Bike className="h-6 w-6" strokeWidth={1.75} /></span>
-                <span><span className="block text-sm font-bold">Delivery</span><span className="block text-xs text-muted-foreground">Rider drop-off · capture address &amp; phone</span></span>
-              </button>
-            </div>
-          </section>
 
+          {/* Open tabs sit at the top regardless of mode — they're always actionable */}
           {heldOrders.length > 0 && (
             <section>
               <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 px-0.5">
@@ -346,52 +342,117 @@ export default function POS() {
             </section>
           )}
 
-          <div className="grid grid-cols-3 gap-3">
-            {[
-              { label: "Available", count: availCount,    color: "text-emerald-600" },
-              { label: "Occupied",  count: occupiedCount, color: "text-amber-600"   },
-              { label: "Reserved",  count: reservedCount, color: "text-blue-600"    },
-            ].map((s) => (
-              <div key={s.label} className="rounded-xl border border-border bg-card p-4 text-center">
-                <p className={`text-3xl font-bold tabular-nums ${s.color}`}>{s.count}</p>
-                <p className="text-xs text-muted-foreground mt-1">{s.label}</p>
-              </div>
-            ))}
-          </div>
-
-          {ZONES.map((zone) => (
-            <section key={zone}>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 px-0.5">{zone}</h2>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-                {store.tables.filter((t) => t.zone === zone).map((table) => {
-                  const cfg = STATUS_CONFIG[table.status];
-                  return (
-                    <button key={table.id} type="button" disabled={!cfg.selectable} onClick={() => cfg.selectable && setSeatingTable(table)} className={`rounded-2xl border-2 p-4 text-left transition-all ${cfg.card}`}>
-                      <div className="flex items-start justify-between mb-3">
-                        <p className="text-sm font-bold leading-tight">{table.label}</p>
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium shrink-0 ${cfg.badge}`}>
-                          <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />{cfg.label}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                        <Users className="h-3 w-3 shrink-0" /><span>{table.seats} seats</span>
-                      </div>
-                      {table.status === "occupied" && (
-                        <div className="mt-2.5 pt-2.5 border-t border-amber-200 space-y-0.5">
-                          <p className="text-xs text-muted-foreground">{table.guests ?? 0} of {table.seats} seated</p>
-                          {table.orderTotal != null && <p className="text-sm font-bold tabular-nums">₦{table.orderTotal.toLocaleString()}</p>}
-                        </div>
-                      )}
-                      {table.status === "reserved" && (
-                        <div className="mt-2.5 pt-2.5 border-t border-blue-200"><p className="text-xs text-muted-foreground leading-relaxed">{table.reservation}</p></div>
-                      )}
-                      {table.status === "available" && <p className="mt-2.5 text-xs font-medium text-primary/70">Tap to seat guests</p>}
-                    </button>
-                  );
-                })}
-              </div>
+          {/* Service-type chooser — three equal options. One click → one task. */}
+          {!floorPlanOpen ? (
+            <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <button
+                type="button"
+                onClick={() => setFloorPlanOpen(true)}
+                className="flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-primary/30 bg-primary/5 p-6 text-center hover:border-primary/60 hover:bg-primary/10 transition-all active:scale-[0.97]"
+              >
+                <span className="grid h-14 w-14 place-items-center rounded-2xl bg-primary text-primary-foreground">
+                  <Utensils className="h-7 w-7" strokeWidth={1.75} />
+                </span>
+                <span>
+                  <span className="block text-base font-bold">Dine in</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">
+                    Seat guests at a table
+                  </span>
+                  <span className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-primary">
+                    {availCount} open · {occupiedCount} seated <ChevronRight className="h-3 w-3" />
+                  </span>
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setServiceModal("Takeout")}
+                className="flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-primary/30 bg-primary/5 p-6 text-center hover:border-primary/60 hover:bg-primary/10 transition-all active:scale-[0.97]"
+              >
+                <span className="grid h-14 w-14 place-items-center rounded-2xl bg-primary text-primary-foreground">
+                  <ShoppingBag className="h-7 w-7" strokeWidth={1.75} />
+                </span>
+                <span>
+                  <span className="block text-base font-bold">Takeout</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">Customer collects from the counter</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setServiceModal("Delivery")}
+                className="flex flex-col items-center justify-center gap-3 rounded-2xl border-2 border-primary/30 bg-primary/5 p-6 text-center hover:border-primary/60 hover:bg-primary/10 transition-all active:scale-[0.97]"
+              >
+                <span className="grid h-14 w-14 place-items-center rounded-2xl bg-primary text-primary-foreground">
+                  <Bike className="h-7 w-7" strokeWidth={1.75} />
+                </span>
+                <span>
+                  <span className="block text-base font-bold">Delivery</span>
+                  <span className="block text-xs text-muted-foreground mt-0.5">Rider drops it off at the address</span>
+                </span>
+              </button>
             </section>
-          ))}
+          ) : (
+            <>
+              {/* Floor plan — only visible after picking Dine in */}
+              <button
+                type="button"
+                onClick={() => setFloorPlanOpen(false)}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />Back to service type
+              </button>
+
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: "Available", count: availCount,    color: "text-emerald-600" },
+                  { label: "Occupied",  count: occupiedCount, color: "text-amber-600"   },
+                  { label: "Reserved",  count: reservedCount, color: "text-blue-600"    },
+                ].map((s) => (
+                  <div key={s.label} className="rounded-xl border border-border bg-card p-4 text-center">
+                    <p className={`text-3xl font-bold tabular-nums ${s.color}`}>{s.count}</p>
+                    <p className="text-xs text-muted-foreground mt-1">{s.label}</p>
+                  </div>
+                ))}
+              </div>
+
+              {ZONES.map((zone) => {
+                const tablesInZone = store.tables.filter((t) => t.zone === zone);
+                if (tablesInZone.length === 0) return null;
+                return (
+                  <section key={zone}>
+                    <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3 px-0.5">{zone}</h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+                      {tablesInZone.map((table) => {
+                        const cfg = STATUS_CONFIG[table.status];
+                        return (
+                          <button key={table.id} type="button" disabled={!cfg.selectable} onClick={() => cfg.selectable && setSeatingTable(table)} className={`rounded-2xl border-2 p-4 text-left transition-all ${cfg.card}`}>
+                            <div className="flex items-start justify-between mb-3">
+                              <p className="text-sm font-bold leading-tight">{table.label}</p>
+                              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium shrink-0 ${cfg.badge}`}>
+                                <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />{cfg.label}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                              <Users className="h-3 w-3 shrink-0" /><span>{table.seats} seats</span>
+                            </div>
+                            {table.status === "occupied" && (
+                              <div className="mt-2.5 pt-2.5 border-t border-amber-200 space-y-0.5">
+                                <p className="text-xs text-muted-foreground">{table.guests ?? 0} of {table.seats} seated</p>
+                                {table.orderTotal != null && <p className="text-sm font-bold tabular-nums">₦{table.orderTotal.toLocaleString()}</p>}
+                              </div>
+                            )}
+                            {table.status === "reserved" && (
+                              <div className="mt-2.5 pt-2.5 border-t border-blue-200"><p className="text-xs text-muted-foreground leading-relaxed">{table.reservation}</p></div>
+                            )}
+                            {table.status === "available" && <p className="mt-2.5 text-xs font-medium text-primary/70">Tap to seat guests</p>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </section>
+                );
+              })}
+            </>
+          )}
         </div>
 
         {seatingTable && <SeatGuestsModal table={seatingTable} onClose={() => setSeatingTable(null)} onConfirm={(c) => seatGuests(seatingTable, c)} />}
@@ -701,20 +762,41 @@ function ModifierModal({ line, onClose, onSave }: { line: CartItem; onClose: () 
 // ── Discount modal (manager approval over ₦500) ─────────────────────────────────
 
 function DiscountModal({ subtotal, onClose, onApply }: { subtotal: number; onClose: () => void; onApply: (amount: number, note: string) => void }) {
-  const [mode, setMode] = useState<"percent" | "amount">("percent");
-  const [value, setValue] = useState("");
+  // Two side-by-side fields — fill the one you know. Editing one auto-updates
+  // the other so the cashier always sees the equivalent. No mode-switching
+  // toggle.
+  const [percent, setPercent] = useState("");
+  const [naira, setNaira] = useState("");
   const [reason, setReason] = useState("");
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
 
-  const raw = Number(value) || 0;
-  const amount = mode === "percent"
-    ? Math.round((subtotal * Math.min(100, Math.max(0, raw))) / 100)
-    : Math.min(Math.max(0, raw), subtotal);
+  // Resolve the effective discount from whichever field the cashier last
+  // edited. (Naira wins if both are populated.)
+  const nairaNum = Number(naira) || 0;
+  const percentNum = Math.min(100, Math.max(0, Number(percent) || 0));
+  const amount = naira !== ""
+    ? Math.min(nairaNum, subtotal)
+    : Math.round((subtotal * percentNum) / 100);
   const needsApproval = amount > DISCOUNT_APPROVAL_THRESHOLD;
 
+  function onPercent(v: string) {
+    setPercent(v);
+    setError("");
+    // Mirror into naira so the cashier sees the equivalent.
+    const p = Math.min(100, Math.max(0, Number(v) || 0));
+    setNaira(v === "" ? "" : String(Math.round((subtotal * p) / 100)));
+  }
+  function onNaira(v: string) {
+    setNaira(v);
+    setError("");
+    // Mirror into %.
+    const n = Math.min(Math.max(0, Number(v) || 0), subtotal);
+    setPercent(v === "" || subtotal === 0 ? "" : ((n / subtotal) * 100).toFixed(1));
+  }
+
   function apply() {
-    if (amount <= 0) { setError("Enter a discount value"); return; }
+    if (amount <= 0) { setError("Enter a discount"); return; }
     if (!reason.trim()) { setError("Enter a reason for the discount"); return; }
     let note = reason.trim();
     if (needsApproval) {
@@ -726,23 +808,43 @@ function DiscountModal({ subtotal, onClose, onApply }: { subtotal: number; onClo
   }
 
   return (
-    <Modal open onClose={onClose} title="Apply discount" description="Discounts above ₦500 require manager approval"
+    <Modal open onClose={onClose} title="Apply discount" description="Fill either field — the other updates automatically"
       footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={apply}>Apply discount</ModalButton></>}>
       <div className="space-y-4">
-        <div className="flex gap-2">
-          {(["percent", "amount"] as const).map((m) => (
-            <button key={m} type="button" onClick={() => { setMode(m); setError(""); }} className={`flex-1 rounded-xl border-2 py-2 text-sm font-semibold transition-colors ${mode === m ? "border-primary bg-primary/5 text-primary" : "border-border text-muted-foreground hover:bg-surface"}`}>
-              {m === "percent" ? "Percentage %" : "Fixed amount ₦"}
-            </button>
-          ))}
+        {/* Two equal fields — one for %, one for ₦. Cross-update on edit. */}
+        <div className="grid grid-cols-2 gap-3">
+          <label className="block">
+            <span className="text-xs font-medium text-muted-foreground">Percentage</span>
+            <div className="relative mt-1">
+              <input
+                type="number"
+                value={percent}
+                onChange={(e) => onPercent(e.target.value)}
+                placeholder="0"
+                autoFocus
+                className={`${inputCls} mt-0 pr-8`}
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">%</span>
+            </div>
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-muted-foreground">Or amount</span>
+            <div className="relative mt-1">
+              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">₦</span>
+              <input
+                type="number"
+                value={naira}
+                onChange={(e) => onNaira(e.target.value)}
+                placeholder="0"
+                className={`${inputCls} mt-0 pl-7`}
+              />
+            </div>
+          </label>
         </div>
-        <label className="block">
-          <span className="text-xs font-medium text-muted-foreground">{mode === "percent" ? "Discount %" : "Discount amount ₦"}</span>
-          <input type="number" value={value} onChange={(e) => { setValue(e.target.value); setError(""); }} placeholder="0" autoFocus className={inputCls} />
-        </label>
+
         <label className="block">
           <span className="text-xs font-medium text-muted-foreground">Reason</span>
-          <input value={reason} onChange={(e) => { setReason(e.target.value); setError(""); }} placeholder="e.g. regular customer" className={inputCls} />
+          <input value={reason} onChange={(e) => { setReason(e.target.value); setError(""); }} placeholder="e.g. regular customer · staff family" className={inputCls} />
         </label>
 
         <div className="rounded-xl bg-surface/60 border border-border p-3 flex justify-between text-sm">
@@ -846,10 +948,17 @@ function PaymentScreen({
           </div>
         )}
 
-        {/* Add a payment */}
+        {/* Add a payment — split is supported, the cashier just keeps adding entries */}
         {!covered && (
           <div className="rounded-2xl border border-border bg-card p-4 space-y-3">
-            <p className="text-sm font-semibold">Add a payment</p>
+            <div>
+              <p className="text-sm font-semibold">{payments.length === 0 ? "Take payment" : "Add another payment"}</p>
+              <p className="text-[11px] text-muted-foreground">
+                {payments.length === 0
+                  ? "Combine cash, card or transfer if the guest splits."
+                  : `${payments.length} payment${payments.length === 1 ? "" : "s"} added · ₦${remaining.toLocaleString()} still to collect`}
+              </p>
+            </div>
             <div className="grid grid-cols-3 gap-2">
               {payMethods.map(({ id, Icon, color }) => (
                 <button key={id} type="button" onClick={() => setEntryMethod(id)} className={`flex flex-col items-center gap-1 rounded-xl border-2 py-2.5 text-xs font-semibold transition-all ${entryMethod === id ? color : "border-border text-muted-foreground hover:bg-surface"}`}>
@@ -919,45 +1028,185 @@ function PaymentScreen({
 
 // ── Takeout / Delivery customer form ────────────────────────────────────────────
 
+/**
+ * Capture-the-customer modal for Takeout / Delivery orders. Designed so a brand-new
+ * cashier can serve a returning customer without ever asking *"what's your
+ * address?"* — typing the phone (or part of the name) matches against the CRM
+ * golden record and autofills name + address. The match also shows the tier
+ * (VIP gets a star), recent visits, and the last delivery address — Toast /
+ * Square / Lightspeed all do this. On submit, any new address is persisted
+ * back to the customer record so the *next* order is just as seamless.
+ */
 function ServiceFormModal({ channel, onClose, onSubmit }: { channel: "Takeout" | "Delivery"; onClose: () => void; onSubmit: (order: ServiceOrder) => void }) {
+  const store = useStore();
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [address, setAddress] = useState("");
   const [pickup, setPickup] = useState(PICKUP_OPTIONS[0]);
   const [fee, setFee] = useState("1500");
   const [error, setError] = useState("");
+  // Track which customer (if any) the cashier picked. Drives autofill + CRM persist.
+  const [matchedId, setMatchedId] = useState<string | null>(null);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Live phone lookup — exact match wins; otherwise prefix match (the 4-digit
+  // "0801…" or "+234 801…" autocomplete pattern). Limit to top 5 to stay clean.
+  const phoneQuery = phone.trim();
+  const exactMatch = useMemo(
+    () => phoneQuery ? store.customers.find((c) => c.phone === phoneQuery) : undefined,
+    [store.customers, phoneQuery],
+  );
+  const suggestions = useMemo(() => {
+    if (!phoneQuery || phoneQuery.length < 3) return [];
+    const lower = phoneQuery.toLowerCase();
+    return store.customers
+      .filter((c) => c.phone.includes(phoneQuery) || c.name.toLowerCase().includes(lower))
+      .slice(0, 5);
+  }, [store.customers, phoneQuery]);
+
+  // Compute lifetime stats for the matched customer — informative for the cashier.
+  const matched = matchedId ? store.customers.find((c) => c.id === matchedId) : exactMatch;
+  const matchedStats = useMemo(() => {
+    if (!matched) return null;
+    const myOrders = store.orders.filter((o) => !o.voided && o.customer?.phone === matched.phone);
+    const visits = (matched.seedVisits ?? 0) + myOrders.length;
+    const lifetime = (matched.seedSpend ?? 0) + myOrders.reduce((s, o) => s + o.total, 0);
+    return { visits, lifetime };
+  }, [matched, store.orders]);
+
+  function pickCustomer(c: typeof store.customers[number]) {
+    setMatchedId(c.id);
+    setPhone(c.phone);
+    setName(c.name);
+    if (c.address) setAddress(c.address);
+    setShowSuggestions(false);
+    setError("");
+  }
+
+  function clearMatch() {
+    setMatchedId(null);
+    // Don't clear the form — the cashier may want to keep the typed phone but
+    // record a *new* customer with that number. Just drop the linkage.
+  }
 
   function submit() {
     if (!name.trim()) { setError("Customer name is required"); return; }
     if (!phone.trim()) { setError("Phone number is required"); return; }
     if (channel === "Delivery" && !address.trim()) { setError("Delivery address is required"); return; }
+    const trimmedPhone = phone.trim();
+    const trimmedAddress = address.trim();
+
+    // Persist back to the CRM:
+    //  • If we have a matched customer and the address changed, update the record.
+    //  • If we don't have a match and the phone isn't already in the CRM, we
+    //    let recordSale create the customer (existing behaviour) — but we
+    //    pre-populate the address so the next order is autofill-ready.
+    if (matched && channel === "Delivery" && trimmedAddress && trimmedAddress !== (matched.address ?? "")) {
+      store.updateCustomer({ ...matched, address: trimmedAddress });
+      toast.info(`Saved new address to ${matched.name}'s profile`);
+    }
+
     onSubmit({
       channel,
       name: name.trim(),
-      phone: phone.trim(),
-      address: channel === "Delivery" ? address.trim() : undefined,
+      phone: trimmedPhone,
+      address: channel === "Delivery" ? trimmedAddress : undefined,
       pickup: channel === "Takeout" ? pickup : undefined,
       fee: channel === "Delivery" ? Number(fee) || 0 : undefined,
     });
   }
 
   return (
-    <Modal open onClose={onClose} title={`${channel} order`} description={channel === "Delivery" ? "Capture the customer & drop-off address" : "Capture the customer & pickup time"}
-      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={submit}>Continue to menu</ModalButton></>}>
+    <Modal
+      open
+      onClose={onClose}
+      title={`${channel} order`}
+      description={channel === "Delivery" ? "Type the phone — returning customers autofill" : "Type the phone — returning customers autofill"}
+      footer={<><ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton><ModalButton onClick={submit}>Continue to menu</ModalButton></>}
+    >
       <div className="space-y-4">
+        {/* Phone first — it's the golden-record key, so we lead with it. */}
+        <div className="relative">
+          <label className="block">
+            <span className="text-xs font-medium text-muted-foreground">Phone number</span>
+            <input
+              value={phone}
+              onChange={(e) => { setPhone(e.target.value); setError(""); clearMatch(); setShowSuggestions(true); }}
+              onFocus={() => setShowSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+              placeholder="+234 ..."
+              inputMode="tel"
+              autoFocus
+              className={inputCls}
+            />
+          </label>
+          {showSuggestions && suggestions.length > 0 && !matched && (
+            <ul className="absolute left-0 right-0 z-20 mt-1 max-h-56 overflow-y-auto rounded-xl border border-border bg-card shadow-xl">
+              {suggestions.map((c) => (
+                <li key={c.id}>
+                  <button
+                    type="button"
+                    onMouseDown={(e) => { e.preventDefault(); pickCustomer(c); }}
+                    className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-surface"
+                  >
+                    <div className="min-w-0">
+                      <p className="flex items-center gap-1.5 text-sm font-medium">
+                        {c.name}
+                        {c.tier === "VIP" && <Star className="h-3 w-3 fill-primary text-primary" />}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground font-mono truncate">{c.phone}{c.address ? ` · ${c.address}` : ""}</p>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground shrink-0">{c.tier}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        {/* Returning-customer pill — only shows when there's a CRM match */}
+        {matched && (
+          <div className="flex items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 p-3">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-card text-primary">
+              {matched.tier === "VIP" ? <Star className="h-4 w-4 fill-primary" /> : <Users className="h-4 w-4" />}
+            </span>
+            <div className="min-w-0 flex-1 text-xs">
+              <p className="font-semibold text-primary">{matched.name} · {matched.tier}</p>
+              <p className="text-muted-foreground">
+                {matchedStats ? `${matchedStats.visits} visits · ₦${(matchedStats.lifetime / 1000).toFixed(0)}k lifetime` : ""}
+                {matched.note && ` · ${matched.note}`}
+              </p>
+              {matched.address && channel === "Delivery" && (
+                <p className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+                  <MapPin className="h-3 w-3" />{matched.address} {address && address !== matched.address && <span className="text-warning">· editing</span>}
+                </p>
+              )}
+            </div>
+            <button type="button" onClick={clearMatch} className="text-[11px] font-medium text-muted-foreground hover:text-foreground shrink-0">
+              Not them
+            </button>
+          </div>
+        )}
+
         <label className="block">
           <span className="text-xs font-medium text-muted-foreground">Customer name</span>
-          <input value={name} onChange={(e) => { setName(e.target.value); setError(""); }} placeholder="e.g. John Doe" autoFocus className={inputCls} />
+          <input value={name} onChange={(e) => { setName(e.target.value); setError(""); }} placeholder="e.g. John Doe" className={inputCls} />
         </label>
-        <label className="block">
-          <span className="text-xs font-medium text-muted-foreground">Phone number</span>
-          <input value={phone} onChange={(e) => { setPhone(e.target.value); setError(""); }} placeholder="+234 ..." inputMode="tel" className={inputCls} />
-        </label>
+
         {channel === "Delivery" ? (
           <>
             <label className="block">
               <span className="text-xs font-medium text-muted-foreground">Delivery address</span>
-              <textarea value={address} onChange={(e) => { setAddress(e.target.value); setError(""); }} placeholder="Street, area, landmark…" rows={3} className={`${inputCls} resize-y`} />
+              <textarea
+                value={address}
+                onChange={(e) => { setAddress(e.target.value); setError(""); }}
+                placeholder="Street, area, landmark…"
+                rows={3}
+                className={`${inputCls} resize-y`}
+              />
+              {matched && address && address !== (matched.address ?? "") && (
+                <p className="mt-1 text-[11px] text-warning">↳ Will save this new address to {matched.name}'s profile on submit.</p>
+              )}
             </label>
             <label className="block">
               <span className="text-xs font-medium text-muted-foreground">Delivery fee ₦</span>
