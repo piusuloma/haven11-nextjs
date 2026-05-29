@@ -205,6 +205,22 @@ export interface StockCount {
   at: number;
 }
 
+/**
+ * Standard usable-yield profile for a raw ingredient that has to be prepped
+ * (peeled / trimmed / butchered) before it can be cooked. `yieldPct` is the
+ * percentage of the raw pull that ends up as usable prepped product — the rest
+ * leaves stock as trim / peel / bone waste.
+ *
+ * This powers Method B "prep conversion": the cook logs the *prepped* weight and
+ * the ROS back-calculates the raw consumed and the yield loss, so no-one does
+ * mental maths on the prep floor. Owners / managers tune these figures from the
+ * real numbers the kitchen logs over time.
+ */
+export interface PrepProfile {
+  sku: string;
+  yieldPct: number; // 1–100 — usable % after prep
+}
+
 export type TableStatus = "available" | "occupied" | "reserved";
 
 export interface TableRec {
@@ -827,6 +843,8 @@ interface StoreState {
   /** Live category vocabulary, curated by owner/manager. Seeded from `DEFAULT_INVENTORY_CATEGORIES`. */
   inventoryCategories: string[];
   menu: MenuItem[];
+  /** Standard prep-yield % per raw ingredient — drives Method B prep conversion. */
+  prepProfiles: PrepProfile[];
   shifts: Shift[];
   orders: Order[];
   waste: WasteEntry[];
@@ -937,6 +955,18 @@ const SEED_MENU: MenuItem[] = [
   { id: "m10", name: "Chapman",         category: "Drinks",    price: 3500, emoji: "🍹", status: "Available", recipe: [{ sku: "BAR-SYRUP", qty: 0.05 }, { sku: "BAR-SODA", qty: 0.15 }, { sku: "BAR-LIME", qty: 1 }] },
   { id: "m11", name: "Espresso",        category: "Drinks",    price: 2000, emoji: "☕", status: "Available", recipe: [{ sku: "BAR-COFFEE", qty: 0.018 }] },
   { id: "m12", name: "Mojito",          category: "Cocktails", price: 4800, emoji: "🍸", status: "Available", recipe: [{ sku: "BAR-RUM", qty: 0.05 }, { sku: "BAR-LIME", qty: 0.5 }, { sku: "BAR-MINT", qty: 0.4 }, { sku: "BAR-SODA", qty: 0.1 }, { sku: "BAR-SYRUP", qty: 0.01 }] },
+];
+
+// Standard prep yields for the raw ingredients that need peeling / trimming /
+// butchering. Starting industry benchmarks — the kitchen recalibrates them from
+// its own logged numbers. (Dry/already-usable goods like rice & oil have no
+// prep loss, so they carry no profile and don't appear in the prep picker.)
+const SEED_PREP_PROFILES: PrepProfile[] = [
+  { sku: "KIT-YAM",      yieldPct: 79 }, // peel
+  { sku: "KIT-PLANTAIN", yieldPct: 64 }, // peel
+  { sku: "KIT-GOAT",     yieldPct: 70 }, // clean / debone
+  { sku: "KIT-BEEF",     yieldPct: 88 }, // trim fat / silver-skin
+  { sku: "KIT-TILAPIA",  yieldPct: 87 }, // scale & gut
 ];
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -1384,6 +1414,7 @@ const SEED_STATE: StoreState = {
   inventory: SEED_INVENTORY,
   inventoryCategories: [...DEFAULT_INVENTORY_CATEGORIES],
   menu: SEED_MENU,
+  prepProfiles: SEED_PREP_PROFILES,
   shifts: SEED_SHIFTS,
   orders: SEED_ORDERS,
   waste: [],
@@ -1454,6 +1485,17 @@ interface StoreValue extends StoreState {
   receiveStock: (sku: string, location: StockLocation, qty: number, altQty?: number) => void;
   recordStockCount: (sku: string, location: StockLocation, actual: number, by: { name: string; shiftId?: string }) => StockCount;
   recordWaste: (input: { sku: string; location: StockLocation; qty: number; reason: string; staffName: string; shiftId?: string; photoName?: string; photoDataUrl?: string }) => WasteEntry;
+  /**
+   * Method B prep conversion — the cook logs the *prepped* (usable) weight; the
+   * ROS reads the item's standard yield %, back-calculates the raw consumed and
+   * the trim waste, deducts the waste from the sub-store and books it as
+   * "Prep trim / peel". Returns the computed raw / waste / cost for the receipt.
+   */
+  recordPrep: (input: { sku: string; location: StockLocation; preppedQty: number; staffName: string; shiftId?: string; photoName?: string; photoDataUrl?: string }) => { ok: boolean; error?: string; raw?: number; waste?: number; cost?: number };
+  /** The standard usable-yield % for an ingredient, or undefined if it isn't prep-tracked. */
+  prepYieldFor: (sku: string) => number | undefined;
+  /** Owner / manager tune the standard yield % an ingredient is held to. */
+  setPrepYield: (sku: string, yieldPct: number) => void;
   importInventory: (items: InventoryItem[]) => void;
   // inventory categories — curated by owner/manager
   addCategory: (name: string) => { ok: boolean; error?: string };
@@ -1559,7 +1601,7 @@ interface StoreValue extends StoreState {
 
 const StoreContext = createContext<StoreValue | null>(null);
 
-const STORAGE_KEY = "haven11_store_v22";
+const STORAGE_KEY = "haven11_store_v23";
 
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
@@ -2008,6 +2050,66 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       auditLog: [wasteEntry, ...p.auditLog],
     }));
     return created;
+  }, []);
+
+  const prepYieldFor = useCallback(
+    (sku: string) => state.prepProfiles.find((p) => p.sku === sku)?.yieldPct,
+    [state.prepProfiles],
+  );
+
+  // Method B — the cook enters the prepped (usable) weight; we read the standard
+  // yield, derive the raw consumed and the trim waste, then deduct *only* the
+  // waste (the usable product stays on the shelf as the same SKU) and book it.
+  const recordPrep = useCallback<StoreValue["recordPrep"]>((input) => {
+    const s = stateRef.current;
+    const branch = s.currentBranch;
+    const profile = s.prepProfiles.find((p) => p.sku === input.sku);
+    if (!profile) return { ok: false, error: "This item isn't prep-tracked — no standard yield on file." };
+    if (input.preppedQty <= 0) return { ok: false, error: "Enter the prepped weight." };
+    const inv = s.inventory.find((i) => i.sku === input.sku && i.branch === branch && i.location === input.location);
+    if (!inv) return { ok: false, error: "No stock of this item in the kitchen." };
+
+    const prepped = input.preppedQty;
+    const raw = +(prepped / (profile.yieldPct / 100)).toFixed(4); // raw consumed to yield `prepped`
+    const waste = +(raw - prepped).toFixed(4);
+    // Can't have prepped more usable product than the raw on hand could yield.
+    if (raw > inv.onHand + 1e-4) {
+      return { ok: false, error: `That needs ${fmtQty(raw)} ${inv.unit} raw but only ${fmtQty(inv.onHand)} ${inv.unit} is in the kitchen.` };
+    }
+    const cost = Math.round(waste * inv.cost);
+
+    const created: WasteEntry = {
+      id: uid("W"), branch, location: input.location, sku: input.sku, name: inv.name,
+      qty: waste, unit: inv.unit, reason: "Prep trim / peel", cost,
+      staffName: input.staffName, shiftId: input.shiftId, at: Date.now(),
+      photoName: input.photoName, photoDataUrl: input.photoDataUrl,
+    };
+    const entry = audit({
+      branch, actor: input.staffName, category: "Inventory", action: "Prep logged",
+      detail: `${inv.name} · prepped ${fmtQty(prepped)} ${inv.unit} @ ${profile.yieldPct}% yield · ${fmtQty(waste)} ${inv.unit} trim · ₦${cost.toLocaleString()}`,
+      ref: input.sku, amount: cost, severity: "info",
+    });
+    setState((p) => ({
+      ...p,
+      inventory: p.inventory.map((i) =>
+        i.sku === input.sku && i.branch === branch && i.location === input.location
+          ? { ...i, onHand: Math.max(0, +(i.onHand - waste).toFixed(4)) }
+          : i,
+      ),
+      waste: [created, ...p.waste],
+      auditLog: [entry, ...p.auditLog],
+    }));
+    return { ok: true, raw, waste, cost };
+  }, []);
+
+  const setPrepYield = useCallback<StoreValue["setPrepYield"]>((sku, yieldPct) => {
+    const pct = Math.max(1, Math.min(100, Math.round(yieldPct)));
+    setState((p) => ({
+      ...p,
+      prepProfiles: p.prepProfiles.some((x) => x.sku === sku)
+        ? p.prepProfiles.map((x) => (x.sku === sku ? { ...x, yieldPct: pct } : x))
+        : [...p.prepProfiles, { sku, yieldPct: pct }],
+    }));
   }, []);
 
   const importInventory = useCallback<StoreValue["importInventory"]>((items) => {
@@ -3484,7 +3586,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setBranch, branchName,
       openShift, closeShift, activeShift, barShift, shiftSales,
       recordSale, voidOrder, closeOrder, appendToOrder,
-      addInventoryItem, receiveStock, recordStockCount, recordWaste, importInventory,
+      addInventoryItem, receiveStock, recordStockCount, recordWaste, recordPrep, prepYieldFor, setPrepYield, importInventory,
       addCategory, renameCategory, removeCategory,
       requestStock, issueStockRequest,
       addMenuItem, updateMenuItem, importMenu, recipeCost,
@@ -3505,7 +3607,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }),
     [state, hydrated, products, setBranch, branchName,
      openShift, closeShift, activeShift, barShift, shiftSales, recordSale, voidOrder, closeOrder, appendToOrder,
-     addInventoryItem, receiveStock, recordStockCount, recordWaste, importInventory,
+     addInventoryItem, receiveStock, recordStockCount, recordWaste, recordPrep, prepYieldFor, setPrepYield, importInventory,
      addCategory, renameCategory, removeCategory,
      requestStock, issueStockRequest,
      addMenuItem, updateMenuItem, importMenu, recipeCost,

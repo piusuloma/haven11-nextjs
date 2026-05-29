@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Clock, CheckCircle2, ChefHat, PackagePlus, Trash2, ClipboardCheck, Ban } from "lucide-react";
+import { Clock, CheckCircle2, ChefHat, PackagePlus, Trash2, ClipboardCheck, Ban, Scale } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { StockRequestModal } from "@/components/StockRequestModal";
 import { WasteModal } from "@/components/WasteModal";
+import { PrepLogModal } from "@/components/PrepLogModal";
 import { ShiftCloseCountModal } from "@/components/ShiftCloseCountModal";
 import { RejectTicketModal } from "@/components/RejectTicketModal";
 import { useStore, type Ticket, type TicketStatus } from "@/lib/store";
@@ -31,6 +32,7 @@ export default function KitchenHome() {
   const store = useStore();
   const [reqOpen, setReqOpen] = useState(false);
   const [wasteOpen, setWasteOpen] = useState(false);
+  const [prepOpen, setPrepOpen] = useState(false);
   const [countOpen, setCountOpen] = useState(false);
   const [rejecting, setRejecting] = useState<Ticket | null>(null);
   // Rejected tickets leave the kitchen queue — they're now the cashier's to resolve.
@@ -54,6 +56,13 @@ export default function KitchenHome() {
             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
           >
             <PackagePlus className="h-3.5 w-3.5" />Request stock
+          </button>
+          <button
+            onClick={() => setPrepOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card px-3 py-2 text-xs font-semibold hover:bg-surface"
+            title="Log finished prep — the ROS converts it to raw used + trim waste"
+          >
+            <Scale className="h-3.5 w-3.5" />Log prep
           </button>
           <button
             onClick={() => setWasteOpen(true)}
@@ -107,6 +116,7 @@ export default function KitchenHome() {
       )}
 
       {reqOpen && <StockRequestModal toLocation="kitchen" onClose={() => setReqOpen(false)} />}
+      {prepOpen && <PrepLogModal location="kitchen" onClose={() => setPrepOpen(false)} />}
       <WasteModal open={wasteOpen} onClose={() => setWasteOpen(false)} location="kitchen" />
       {countOpen && <ShiftCloseCountModal location="kitchen" onClose={() => setCountOpen(false)} />}
       {rejecting && <RejectTicketModal ticket={rejecting} onClose={() => setRejecting(null)} />}
