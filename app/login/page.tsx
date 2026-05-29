@@ -3,28 +3,31 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useAuth, STAFF_ROSTER, type StaffUser } from "@/lib/auth";
+import { useAuth, STAFF_ROSTER, type StaffUser, type StaffRole } from "@/lib/auth";
 import { useStore } from "@/lib/store";
-import { ChefHat, Wine, CreditCard, LayoutDashboard, Boxes, Crown, Delete, Calculator, UserCog, ArrowLeft } from "lucide-react";
+import { ChefHat, Wine, CreditCard, LayoutDashboard, Boxes, Crown, Delete, Calculator, UserCog, ScrollText, ArrowLeft } from "lucide-react";
 
-const roleIcon: Record<string, typeof ChefHat> = {
+// Keyed by StaffRole so adding a role to the roster forces an entry here too.
+const roleIcon: Record<StaffRole, typeof ChefHat> = {
   owner: Crown,
   manager: LayoutDashboard,
   cashier: CreditCard,
   kitchen: ChefHat,
   bartender: Wine,
   storekeeper: Boxes,
+  procurement: ScrollText,
   accountant: Calculator,
   hr: UserCog,
 };
 
-const roleColor: Record<string, { bg: string; text: string; border: string }> = {
+const roleColor: Record<StaffRole, { bg: string; text: string; border: string }> = {
   owner:       { bg: "bg-amber-50",   text: "text-amber-600",   border: "border-amber-200" },
   manager:     { bg: "bg-primary/5",  text: "text-primary",     border: "border-primary/20" },
   cashier:     { bg: "bg-emerald-50", text: "text-emerald-600", border: "border-emerald-200" },
   kitchen:     { bg: "bg-orange-50",  text: "text-orange-600",  border: "border-orange-200" },
   bartender:   { bg: "bg-purple-50",  text: "text-purple-600",  border: "border-purple-200" },
   storekeeper: { bg: "bg-sky-50",     text: "text-sky-600",     border: "border-sky-200" },
+  procurement: { bg: "bg-rose-50",    text: "text-rose-600",    border: "border-rose-200" },
   accountant:  { bg: "bg-teal-50",    text: "text-teal-600",    border: "border-teal-200" },
   hr:          { bg: "bg-indigo-50",  text: "text-indigo-600",  border: "border-indigo-200" },
 };
