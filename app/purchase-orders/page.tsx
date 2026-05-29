@@ -24,9 +24,17 @@ export default function PurchaseOrders() {
   const store = useStore();
   const { user } = useAuth();
   const me = user?.name ?? "You";
-  const isFinance = user?.role === "owner" || user?.role === "manager" || user?.role === "accountant";
-  // Branch purchase orders are approved by management.
-  const canApprove = user?.role === "owner" || user?.role === "manager";
+  const role = user?.role;
+  const isFinance = role === "owner" || role === "manager" || role === "accountant";
+  // Segregation of duties along the PO lifecycle:
+  //  · Procurement Officer raises the PO and manages vendors.
+  //  · Manager (or Owner) approves it — that's what sends it to the vendor.
+  //  · Storekeeper receives the goods into the Strong Room.
+  //  · Accountant (or Owner) authorises payment once goods are in.
+  const canCreate  = role === "procurement" || role === "owner";
+  const canApprove = role === "owner" || role === "manager";
+  const canReceive = role === "storekeeper" || role === "owner";
+  const canPay     = role === "accountant" || role === "owner";
   const [creating, setCreating] = useState(false);
   const [receiving, setReceiving] = useState<PurchaseOrder | null>(null);
 
@@ -56,15 +64,17 @@ export default function PurchaseOrders() {
 
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">Purchase orders</h2>
-        <button
-          onClick={() => {
-            if (store.vendors.length === 0) { toast.error("Add a vendor first"); return; }
-            setCreating(true);
-          }}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus className="h-3.5 w-3.5" />New purchase order
-        </button>
+        {canCreate && (
+          <button
+            onClick={() => {
+              if (store.vendors.length === 0) { toast.error("Add a vendor first"); return; }
+              setCreating(true);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="h-3.5 w-3.5" />New purchase order
+          </button>
+        )}
       </div>
 
       <section className="space-y-3">
@@ -102,25 +112,29 @@ export default function PurchaseOrders() {
 
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-semibold">Total ₦{po.total.toLocaleString()}</p>
-                <div className="flex gap-1.5">
+                <div className="flex items-center gap-1.5">
                   {po.status === "Pending Approval" && (canApprove ? (
                     <>
                       <button onClick={() => { store.rejectPO(po.id, me); toast.error(`${po.id} rejected`); }} className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">Reject</button>
                       <button onClick={() => { store.approvePO(po.id, me); toast.success(`${po.id} approved — sent to vendor`); }} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">Approve</button>
                     </>
                   ) : (
-                    <span className="text-xs text-muted-foreground">Awaiting management approval</span>
+                    <span className="text-xs text-muted-foreground">Awaiting manager approval</span>
                   ))}
-                  {(po.status === "Ordered" || po.status === "Partially Received") && (
+                  {(po.status === "Ordered" || po.status === "Partially Received") && (canReceive ? (
                     <button onClick={() => setReceiving(po)} className="inline-flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
                       <PackageCheck className="h-3.5 w-3.5" />Receive goods
                     </button>
-                  )}
-                  {(po.status === "Partially Received" || po.status === "Received") && !po.paid && (
-                    <button onClick={() => { store.markPOPaid(po.id); toast.success(`${po.id} marked paid`); }} className="rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium hover:bg-surface">
-                      Mark paid
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Awaiting storekeeper receipt</span>
+                  ))}
+                  {(po.status === "Partially Received" || po.status === "Received") && !po.paid && (canPay ? (
+                    <button onClick={() => { store.markPOPaid(po.id, me); toast.success(`${po.id} payment authorised`); }} className="rounded-md bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
+                      Authorise payment
                     </button>
-                  )}
+                  ) : (
+                    <span className="text-xs text-muted-foreground">Awaiting accountant payment</span>
+                  ))}
                 </div>
               </div>
             </article>
@@ -147,9 +161,11 @@ export default function PurchaseOrders() {
                     </div>
                     <div className="flex items-center gap-3">
                       <span className={`tabular-nums font-bold ${age > 30 ? "text-destructive" : ""}`}>₦{p.total.toLocaleString()}</span>
-                      <button onClick={() => { store.markPOPaid(p.id); toast.success(`${p.id} marked paid`); }} className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-surface">
-                        Mark paid
-                      </button>
+                      {canPay && (
+                        <button onClick={() => { store.markPOPaid(p.id, me); toast.success(`${p.id} payment authorised`); }} className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-surface">
+                          Authorise payment
+                        </button>
+                      )}
                     </div>
                   </li>
                 );
@@ -366,6 +382,7 @@ function NewPOModal({ onClose }: { onClose: () => void }) {
 
 function ReceiveModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void }) {
   const store = useStore();
+  const { user } = useAuth();
   const [blind, setBlind] = useState(false);
   const [rows, setRows] = useState<Record<string, { qty: string; cost: string; expiry: string }>>(
     Object.fromEntries(po.lines.map((l) => [l.sku, {
@@ -389,7 +406,7 @@ function ReceiveModal({ po, onClose }: { po: PurchaseOrder; onClose: () => void 
       }))
       .filter((r) => r.qtyReceived > 0);
     if (received.length === 0) { toast.error("Enter at least one received quantity"); return; }
-    store.receivePO(po.id, received, "Storekeeper");
+    store.receivePO(po.id, received, user?.name ?? "Storekeeper");
     const priced = received.filter((r) => {
       const line = po.lines.find((l) => l.sku === r.sku);
       return line && r.unitCost !== line.unitCost;

@@ -1,24 +1,27 @@
 "use client";
 
 import { useState } from "react";
-import { Clock, CheckCircle2, Wine, Trash2, PackagePlus, ClipboardCheck } from "lucide-react";
+import { Clock, CheckCircle2, Wine, Trash2, PackagePlus, ClipboardCheck, Ban } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { ShiftBanner } from "@/components/ShiftBanner";
 import { WasteModal } from "@/components/WasteModal";
 import { StockRequestModal } from "@/components/StockRequestModal";
 import { ShiftCloseCountModal } from "@/components/ShiftCloseCountModal";
+import { RejectTicketModal } from "@/components/RejectTicketModal";
 import { useStore, type Ticket, type TicketStatus } from "@/lib/store";
 
 const statusCfg: Record<TicketStatus, { bg: string; border: string; badge: string; label: string }> = {
   New:       { bg: "bg-sky-50",    border: "border-sky-300",    badge: "bg-sky-100 text-sky-700",       label: "Waiting" },
   Preparing: { bg: "bg-orange-50", border: "border-orange-300", badge: "bg-orange-100 text-orange-700", label: "Making" },
   Ready:     { bg: "bg-primary/5", border: "border-primary/40", badge: "bg-primary/10 text-primary",    label: "Ready" },
+  Rejected:  { bg: "bg-destructive/5", border: "border-destructive/40", badge: "bg-destructive/10 text-destructive", label: "Rejected" },
 };
 
 const nextAction: Record<TicketStatus, string> = {
   New: "Start making",
   Preparing: "Mark ready",
   Ready: "Hand off",
+  Rejected: "Rejected",
 };
 
 function ageMins(ts: number) {
@@ -30,7 +33,11 @@ export default function BarHome() {
   const [wasteOpen, setWasteOpen] = useState(false);
   const [reqOpen, setReqOpen] = useState(false);
   const [countOpen, setCountOpen] = useState(false);
-  const tickets = store.tickets.filter((t) => t.station === "Bar" && t.branch === store.currentBranch);
+  const [rejecting, setRejecting] = useState<Ticket | null>(null);
+  // Rejected tickets leave the bar queue — the cashier resolves them.
+  const tickets = store.tickets.filter(
+    (t) => t.station === "Bar" && t.branch === store.currentBranch && t.status !== "Rejected",
+  );
 
   const counts = {
     waiting: tickets.filter((t) => t.status === "New").length,
@@ -91,18 +98,26 @@ export default function BarHome() {
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {tickets.map((t) => <BarTicket key={t.id} ticket={t} onAdvance={() => store.advanceTicket(t.id)} />)}
+          {tickets.map((t) => (
+            <BarTicket
+              key={t.id}
+              ticket={t}
+              onAdvance={() => store.advanceTicket(t.id)}
+              onReject={() => setRejecting(t)}
+            />
+          ))}
         </div>
       )}
 
       <WasteModal open={wasteOpen} onClose={() => setWasteOpen(false)} location="bar" />
       {reqOpen && <StockRequestModal toLocation="bar" onClose={() => setReqOpen(false)} />}
       {countOpen && <ShiftCloseCountModal location="bar" onClose={() => setCountOpen(false)} />}
+      {rejecting && <RejectTicketModal ticket={rejecting} onClose={() => setRejecting(null)} />}
     </AppShell>
   );
 }
 
-function BarTicket({ ticket, onAdvance }: { ticket: Ticket; onAdvance: () => void }) {
+function BarTicket({ ticket, onAdvance, onReject }: { ticket: Ticket; onAdvance: () => void; onReject: () => void }) {
   const cfg = statusCfg[ticket.status];
   const mins = ageMins(ticket.createdAt);
   const urgent = mins >= 8;
@@ -133,18 +148,30 @@ function BarTicket({ ticket, onAdvance }: { ticket: Ticket; onAdvance: () => voi
         <span className={`flex items-center gap-1.5 text-xs font-medium ${urgent ? "text-destructive" : "text-muted-foreground"}`}>
           <Clock className="h-3.5 w-3.5" />{mins}m{urgent ? " · slow" : ""}
         </span>
-        <button
-          type="button"
-          onClick={onAdvance}
-          className={`rounded-xl px-4 py-2 text-sm font-bold transition-all active:scale-95 ${
-            ticket.status === "Ready"
-              ? "bg-primary text-primary-foreground hover:bg-primary/90"
-              : "bg-foreground text-background hover:bg-foreground/80"
-          }`}
-        >
-          {ticket.status === "Ready" && <CheckCircle2 className="inline h-4 w-4 mr-1 -mt-0.5" />}
-          {nextAction[ticket.status]}
-        </button>
+        <div className="flex items-center gap-2">
+          {ticket.status !== "Ready" && (
+            <button
+              type="button"
+              onClick={onReject}
+              title="Can't make this drink — send it back to the cashier"
+              className="inline-flex items-center gap-1 rounded-xl border border-destructive/30 px-3 py-2 text-sm font-semibold text-destructive hover:bg-destructive/10 transition-colors active:scale-95"
+            >
+              <Ban className="h-4 w-4" />Can&apos;t make
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onAdvance}
+            className={`rounded-xl px-4 py-2 text-sm font-bold transition-all active:scale-95 ${
+              ticket.status === "Ready"
+                ? "bg-primary text-primary-foreground hover:bg-primary/90"
+                : "bg-foreground text-background hover:bg-foreground/80"
+            }`}
+          >
+            {ticket.status === "Ready" && <CheckCircle2 className="inline h-4 w-4 mr-1 -mt-0.5" />}
+            {nextAction[ticket.status]}
+          </button>
+        </div>
       </div>
     </div>
   );

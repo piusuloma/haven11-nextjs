@@ -107,13 +107,14 @@ const roleNav: Record<StaffRole, NavSection[]> = {
   // ── Single-task roles — flat sidebar, no headers needed ────────────────────
   cashier: [
     // Industry-standard cashier scope: take orders + take payments + manage their
-    // shift + request petty cash. NOT: rider/fleet management, expense approval,
-    // inventory, vendors, HR. Their dispatch view (assign/complete delivery jobs)
-    // is reachable from `/cashier-home` ↦ the order-tracking strip when needed.
+    // shift. NOT: petty-cash requisitions, rider/fleet management, expense
+    // approval, inventory, vendors, HR. Petty cash is raised by the branch
+    // manager / storekeeper, not the till operator. Their dispatch view
+    // (assign/complete delivery jobs) is reachable from `/cashier-home` ↦ the
+    // order-tracking strip when needed.
     { label: "", items: [
       { href: "/cashier-home", icon: LayoutDashboard, label: "My Shift" },
       { href: "/pos", icon: ShoppingCart, label: "Front of House" },
-      { href: "/expenses", icon: Wallet, label: "Petty cash" },
     ]},
   ],
   kitchen: [
@@ -136,11 +137,23 @@ const roleNav: Record<StaffRole, NavSection[]> = {
     { label: "Inventory", items: [
       { href: "/inventory", icon: Boxes, label: "Stock" },
       { href: "/transfers", icon: ArrowLeftRight, label: "Transfers" },
-      { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
-      { href: "/vendors", icon: Truck, label: "Vendors" },
+      // Receiving-only: the storekeeper books goods in against POs but no longer
+      // raises them or manages vendors — that's the Procurement Officer's desk.
+      { href: "/purchase-orders", icon: ScrollText, label: "Receiving" },
     ]},
     { label: "Money", items: [
       { href: "/expenses", icon: Wallet, label: "Expenses" },
+    ]},
+  ],
+  // ── Procurement Officer — raises POs & manages vendors; segregated from the
+  //    storekeeper who receives the goods. ───────────────────────────────────
+  procurement: [
+    { label: "", items: [
+      { href: "/purchase-orders", icon: ScrollText, label: "Procurement" },
+    ]},
+    { label: "Sourcing", items: [
+      { href: "/vendors", icon: Truck, label: "Vendors" },
+      { href: "/inventory", icon: Boxes, label: "Stock levels" },
     ]},
   ],
   accountant: [

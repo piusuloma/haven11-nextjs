@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth, STAFF_ROSTER, type StaffUser } from "@/lib/auth";
 import { useStore } from "@/lib/store";
-import { ChefHat, Wine, CreditCard, LayoutDashboard, Boxes, Crown, Delete, Calculator, UserCog } from "lucide-react";
+import { ChefHat, Wine, CreditCard, LayoutDashboard, Boxes, Crown, Delete, Calculator, UserCog, ArrowLeft } from "lucide-react";
 
 const roleIcon: Record<string, typeof ChefHat> = {
   owner: Crown,
@@ -206,6 +207,14 @@ export default function LoginPage() {
           );
         })}
       </div>
+
+      <Link
+        href="/welcome"
+        className="mt-10 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        Back to home
+      </Link>
 
       {selected && <PinPad staff={selected} onClose={() => setSelected(null)} />}
     </div>

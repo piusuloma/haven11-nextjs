@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { ShoppingCart, Banknote, CreditCard, Smartphone, Users, BellRing, CheckCircle2, ChefHat, Wine } from "lucide-react";
+import { ShoppingCart, Banknote, CreditCard, Smartphone, Users, BellRing, CheckCircle2, ChefHat, Wine, Ban } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
 import { ShiftBanner } from "@/components/ShiftBanner";
 import { ManagerApprovalModal } from "@/components/ManagerApprovalModal";
@@ -74,6 +74,9 @@ export default function CashierHome() {
           <ShoppingCart className="h-8 w-8" strokeWidth={1.5} />
         </div>
       </button>
+
+      {/* Rejected by the kitchen / bar — needs the cashier to refund, substitute, or void. */}
+      <RejectedTickets onVoid={setVoiding} />
 
       {/* Ready to serve — kitchen / bar marked these "Ready"; waiter sees them here so
           they don't have to walk to the kitchen window or check the display. */}
@@ -226,6 +229,86 @@ export default function CashierHome() {
         />
       )}
     </AppShell>
+  );
+}
+
+// ── Rejected by kitchen / bar ─────────────────────────────────────────────────
+
+/**
+ * Tickets the Kitchen or Bar couldn't make (86'd, out of stock, equipment down).
+ * The reserved stock has already been returned; the cashier still has to settle
+ * the guest — void the order, refund, or ring a substitute. "Resolved" clears
+ * the alert once they've handled it.
+ */
+function RejectedTickets({ onVoid }: { onVoid: (order: Order) => void }) {
+  const store = useStore();
+  const rejected = store.tickets.filter(
+    (t) => t.branch === store.currentBranch && t.status === "Rejected",
+  );
+  if (rejected.length === 0) return null;
+
+  return (
+    <section className="rounded-3xl border-2 border-destructive/40 bg-destructive/5 p-4 sm:p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="grid h-9 w-9 place-items-center rounded-full bg-destructive text-white animate-pulse">
+          <Ban className="h-4 w-4" />
+        </span>
+        <div>
+          <p className="text-base font-bold text-destructive">
+            {rejected.length} {rejected.length === 1 ? "order" : "orders"} rejected by the kitchen / bar
+          </p>
+          <p className="text-xs text-destructive/80">
+            Void the order to return its stock, or ring a substitute — then tap <span className="font-semibold">Resolved</span>
+          </p>
+        </div>
+      </div>
+
+      <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        {rejected.map((t) => {
+          const StationIcon = t.station === "Kitchen" ? ChefHat : Wine;
+          const order = store.orders.find((o) => o.id === t.orderId);
+          const canVoid = order && !order.voided && order.status !== "Closed";
+          return (
+            <li key={t.id} className="rounded-2xl border border-destructive/20 bg-white p-3 flex items-start gap-3">
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-destructive/10 text-destructive">
+                <StationIcon className="h-4.5 w-4.5" />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-baseline justify-between gap-2">
+                  <p className="font-semibold truncate">{t.label}</p>
+                  <span className="text-[11px] text-muted-foreground shrink-0 font-mono">#{t.orderId}</span>
+                </div>
+                <p className="text-xs text-foreground/85 line-clamp-1 mt-0.5">
+                  {t.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}
+                </p>
+                <p className="text-xs font-medium text-destructive mt-0.5">
+                  ↳ {t.rejectionReason}{t.rejectedBy ? ` · ${t.rejectedBy}` : ""}
+                </p>
+                <div className="flex items-center gap-2 mt-2">
+                  {canVoid && (
+                    <button
+                      onClick={() => onVoid(order)}
+                      className="inline-flex items-center gap-1 rounded-lg bg-destructive px-3 py-1.5 text-xs font-semibold text-white hover:bg-destructive/90"
+                    >
+                      Void order
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      store.clearTicket(t.id);
+                      toast.success(`#${t.orderId} cleared`);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg border border-border bg-card px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-surface"
+                  >
+                    <CheckCircle2 className="h-3.5 w-3.5" />Resolved
+                  </button>
+                </div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 

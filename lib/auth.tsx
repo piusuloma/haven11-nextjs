@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useState } from "react";
 
-export type StaffRole = "owner" | "manager" | "cashier" | "kitchen" | "bartender" | "storekeeper" | "accountant" | "hr";
+export type StaffRole = "owner" | "manager" | "cashier" | "kitchen" | "bartender" | "storekeeper" | "procurement" | "accountant" | "hr";
 
 export interface StaffUser {
   id: string;
@@ -25,6 +25,7 @@ export const STAFF_ROSTER: StaffUser[] = [
   { id: "6", name: "Eze M.",   initials: "EM", role: "storekeeper", title: "Storekeeper",    pin: "5555", defaultRoute: "/store-home",        branch: "strong-room" },
   { id: "7", name: "Bola F.",  initials: "BF", role: "accountant",  title: "Accountant",     pin: "6666", defaultRoute: "/expenses",          branch: undefined },
   { id: "8", name: "Funke I.", initials: "FI", role: "hr",          title: "HR Officer",     pin: "7777", defaultRoute: "/hr",                branch: undefined },
+  { id: "9", name: "Ngozi P.", initials: "NP", role: "procurement", title: "Procurement Officer", pin: "8888", defaultRoute: "/purchase-orders", branch: "strong-room" },
 ];
 
 interface AuthContextValue {

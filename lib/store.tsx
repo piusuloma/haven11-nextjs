@@ -220,7 +220,13 @@ export interface TableRec {
 }
 
 export type TicketStation = "Kitchen" | "Bar";
-export type TicketStatus = "New" | "Preparing" | "Ready";
+/**
+ * "Rejected" is a terminal state the Kitchen / Bar set when they can't make the
+ * order (86'd item, out of stock, equipment down). A rejected ticket leaves the
+ * prep queue, returns its reserved ingredients to stock, and surfaces to the
+ * cashier so they can refund / substitute / void before the guest is charged.
+ */
+export type TicketStatus = "New" | "Preparing" | "Ready" | "Rejected";
 
 export interface TicketItem { name: string; qty: number; detail?: string }
 
@@ -234,6 +240,10 @@ export interface Ticket {
   items: TicketItem[];
   status: TicketStatus;
   createdAt: number;
+  /** Why the kitchen / bar rejected this ticket (set when status === "Rejected"). */
+  rejectionReason?: string;
+  rejectedBy?: string;
+  rejectedAt?: number;
 }
 
 export type TransferStatus = "Requested" | "Approved" | "Rejected" | "Issued" | "Received" | "Disputed";
@@ -1466,6 +1476,10 @@ interface StoreValue extends StoreState {
   removeTable: (id: string) => { ok: boolean; error?: string };
   advanceTicket: (id: string) => void;
   markTicketReady: (id: string) => void;
+  /** Kitchen / Bar reject a ticket they can't fulfil — restocks its ingredients, logs the reason. */
+  rejectTicket: (id: string, reason: string, by: string) => void;
+  /** Remove a ticket from the board (used by the cashier to clear an acknowledged rejection). */
+  clearTicket: (id: string) => void;
   // strong-room transfers
   requestTransfer: (input: { toBranch: string; lines: { sku: string; qty: number }[]; reason: string; by: string }) => Transfer;
   approveTransfer: (id: string, by: string) => void;
@@ -1478,7 +1492,7 @@ interface StoreValue extends StoreState {
   approvePO: (id: string, by: string) => void;
   rejectPO: (id: string, by: string) => void;
   receivePO: (id: string, received: { sku: string; qtyReceived: number; unitCost: number; expiry?: string }[], by: string) => void;
-  markPOPaid: (id: string) => void;
+  markPOPaid: (id: string, by: string) => void;
   // Vendor volume-break pricing — tiered cost per SKU per vendor
   upsertVendorPricing: (input: { vendorId: string; sku: string; tiers: VendorPriceTier[]; note?: string }) => { ok: boolean; error?: string };
   removeVendorPricing: (id: string) => { ok: boolean; error?: string };
@@ -2108,6 +2122,36 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  // The kitchen / bar can't make a ticket (86'd item, out of stock). Flag it
+  // rejected and log the reason so the cashier is alerted to refund / substitute
+  // / void. Stock is intentionally NOT returned here — the recipe ingredients go
+  // back when the cashier voids the order (the single source of truth for
+  // restocking), which avoids double-counting the return.
+  const rejectTicket = useCallback<StoreValue["rejectTicket"]>((id, reason, by) => {
+    setState((p) => {
+      const ticket = p.tickets.find((t) => t.id === id);
+      if (!ticket || ticket.status === "Rejected") return p;
+      const entry = audit({
+        branch: ticket.branch, actor: by, category: "Sales", action: `${ticket.station} ticket rejected`,
+        detail: `#${ticket.orderId} · ${ticket.label} · ${reason}`,
+        ref: ticket.orderId, severity: "warning",
+      });
+      return {
+        ...p,
+        tickets: p.tickets.map((t) =>
+          t.id === id
+            ? { ...t, status: "Rejected" as const, rejectionReason: reason, rejectedBy: by, rejectedAt: Date.now() }
+            : t,
+        ),
+        auditLog: [entry, ...p.auditLog],
+      };
+    });
+  }, []);
+
+  const clearTicket = useCallback<StoreValue["clearTicket"]>((id) => {
+    setState((p) => ({ ...p, tickets: p.tickets.filter((t) => t.id !== id) }));
+  }, []);
+
   // ── Strong-room transfers ──────────────────────────────────────────────────
 
   const requestTransfer = useCallback<StoreValue["requestTransfer"]>((input) => {
@@ -2466,11 +2510,23 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
-  const markPOPaid = useCallback<StoreValue["markPOPaid"]>((id) => {
-    setState((p) => ({
-      ...p,
-      purchaseOrders: p.purchaseOrders.map((x) => (x.id === id ? { ...x, paid: true, paidAt: Date.now() } : x)),
-    }));
+  // Payment is the accountant's gate — authorised only after goods are received.
+  const markPOPaid = useCallback<StoreValue["markPOPaid"]>((id, by) => {
+    setState((p) => {
+      const po = p.purchaseOrders.find((x) => x.id === id);
+      if (!po || po.paid) return p;
+      const vendorName = p.vendors.find((v) => v.id === po.vendorId)?.name ?? "Vendor";
+      const entry = audit({
+        branch: po.branch, actor: by, category: "Finance", action: "Purchase order paid",
+        detail: `${po.id} · ${vendorName} · ₦${po.total.toLocaleString()}`,
+        ref: po.id, amount: po.total, severity: "info",
+      });
+      return {
+        ...p,
+        purchaseOrders: p.purchaseOrders.map((x) => (x.id === id ? { ...x, paid: true, paidAt: Date.now() } : x)),
+        auditLog: [entry, ...p.auditLog],
+      };
+    });
   }, []);
 
   // ── Expenses & petty cash ──────────────────────────────────────────────────
@@ -3432,7 +3488,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       addCategory, renameCategory, removeCategory,
       requestStock, issueStockRequest,
       addMenuItem, updateMenuItem, importMenu, recipeCost,
-      seatTable, freeTable, addTable, updateTable, removeTable, advanceTicket, markTicketReady,
+      seatTable, freeTable, addTable, updateTable, removeTable, advanceTicket, markTicketReady, rejectTicket, clearTicket,
       requestTransfer, approveTransfer, rejectTransfer, issueTransfer, receiveTransfer,
       addVendor, createPO, approvePO, rejectPO, receivePO, markPOPaid,
       upsertVendorPricing, removeVendorPricing,
@@ -3453,7 +3509,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
      addCategory, renameCategory, removeCategory,
      requestStock, issueStockRequest,
      addMenuItem, updateMenuItem, importMenu, recipeCost,
-     seatTable, freeTable, addTable, updateTable, removeTable, advanceTicket, markTicketReady,
+     seatTable, freeTable, addTable, updateTable, removeTable, advanceTicket, markTicketReady, rejectTicket, clearTicket,
      requestTransfer, approveTransfer, rejectTransfer, issueTransfer, receiveTransfer,
      addVendor, createPO, approvePO, rejectPO, receivePO, markPOPaid,
      upsertVendorPricing, removeVendorPricing,

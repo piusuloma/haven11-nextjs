@@ -53,6 +53,9 @@ export default function Expenses() {
   const canApprove   = user?.role === "accountant" || user?.role === "owner";
   const canDisburse  = user?.role === "accountant" || user?.role === "owner";
   const canTopUpFloat = user?.role === "accountant" || user?.role === "owner";
+  // Cashiers run the till, not petty cash — they can't raise requisitions.
+  // Requests come from branch operations (manager / storekeeper) and management.
+  const canRequest   = user?.role !== "cashier";
 
   const [creating, setCreating] = useState(false);
   const [reconciling, setReconciling] = useState<ExpenseRequest | null>(null);
@@ -133,15 +136,17 @@ export default function Expenses() {
       {/* Requests */}
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">Petty-cash requisitions</h2>
-        <button
-          onClick={() => {
-            if (myOpen) { toast.error(`Settle ${myOpen.id} before raising a new request`); return; }
-            setCreating(true);
-          }}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus className="h-3.5 w-3.5" />New request
-        </button>
+        {canRequest && (
+          <button
+            onClick={() => {
+              if (myOpen) { toast.error(`Settle ${myOpen.id} before raising a new request`); return; }
+              setCreating(true);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="h-3.5 w-3.5" />New request
+          </button>
+        )}
       </div>
 
       {myOpen && (

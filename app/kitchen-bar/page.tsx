@@ -1,13 +1,16 @@
 "use client";
 
-import { Clock, ChefHat, Wine, CheckCircle2 } from "lucide-react";
+import { useState } from "react";
+import { Clock, ChefHat, Wine, CheckCircle2, Ban } from "lucide-react";
 import { AppShell } from "@/components/AppShell";
+import { RejectTicketModal } from "@/components/RejectTicketModal";
 import { useStore, type Ticket, type TicketStation, type TicketStatus } from "@/lib/store";
 
 const badge: Record<TicketStatus, string> = {
   New: "bg-sky-100 text-sky-700",
   Preparing: "bg-orange-100 text-orange-700",
   Ready: "bg-primary text-primary-foreground",
+  Rejected: "bg-destructive/10 text-destructive",
 };
 
 function ageMins(ts: number) {
@@ -16,6 +19,7 @@ function ageMins(ts: number) {
 
 export default function KitchenBar() {
   const store = useStore();
+  const [rejecting, setRejecting] = useState<Ticket | null>(null);
   const cols: { key: TicketStation; icon: typeof ChefHat }[] = [
     { key: "Kitchen", icon: ChefHat },
     { key: "Bar", icon: Wine },
@@ -26,7 +30,10 @@ export default function KitchenBar() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {cols.map((c) => {
           const Icon = c.icon;
-          const list = store.tickets.filter((t) => t.station === c.key && t.branch === store.currentBranch);
+          // Rejected tickets drop off the board — the cashier picks them up.
+          const list = store.tickets.filter(
+            (t) => t.station === c.key && t.branch === store.currentBranch && t.status !== "Rejected",
+          );
           return (
             <section key={c.key} className="rounded-xl border border-border bg-card">
               <header className="flex items-center justify-between p-4 border-b border-border">
@@ -46,6 +53,7 @@ export default function KitchenBar() {
                       ticket={t}
                       onBump={() => store.advanceTicket(t.id)}
                       onReady={() => store.markTicketReady(t.id)}
+                      onReject={() => setRejecting(t)}
                     />
                   ))}
                 </ul>
@@ -54,11 +62,12 @@ export default function KitchenBar() {
           );
         })}
       </div>
+      {rejecting && <RejectTicketModal ticket={rejecting} onClose={() => setRejecting(null)} />}
     </AppShell>
   );
 }
 
-function TicketRow({ ticket, onBump, onReady }: { ticket: Ticket; onBump: () => void; onReady: () => void }) {
+function TicketRow({ ticket, onBump, onReady, onReject }: { ticket: Ticket; onBump: () => void; onReady: () => void; onReject: () => void }) {
   const mins = ageMins(ticket.createdAt);
   const late = mins >= 10;
   const isReady = ticket.status === "Ready";
@@ -92,9 +101,19 @@ function TicketRow({ ticket, onBump, onReady }: { ticket: Ticket; onBump: () => 
           {isReady ? "Serve & clear" : "Bump →"}
         </button>
         {!isReady && (
-          <button onClick={onReady} className="flex-1 inline-flex items-center justify-center gap-1 rounded-md bg-primary py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
-            <CheckCircle2 className="h-3.5 w-3.5" />Mark ready
-          </button>
+          <>
+            <button onClick={onReady} className="flex-1 inline-flex items-center justify-center gap-1 rounded-md bg-primary py-1.5 text-xs font-semibold text-primary-foreground hover:bg-primary/90">
+              <CheckCircle2 className="h-3.5 w-3.5" />Mark ready
+            </button>
+            <button
+              onClick={onReject}
+              title="Can't make this order — send it back to the cashier"
+              aria-label="Reject ticket"
+              className="inline-flex items-center justify-center gap-1 rounded-md border border-destructive/30 px-2.5 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/10"
+            >
+              <Ban className="h-3.5 w-3.5" />Reject
+            </button>
+          </>
         )}
       </div>
     </li>
