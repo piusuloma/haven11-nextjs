@@ -7,8 +7,10 @@ import { useAuth } from "@/lib/auth";
 import { useStore, fmtQty, LOCATION_NAME, type StockLocation } from "@/lib/store";
 import { Modal, ModalButton } from "@/components/Modal";
 
+// Note: "Prep trim / peel" is intentionally NOT here. Peel/trim/bone loss is
+// captured exclusively through Log prep (Method B) so the same trim can't be
+// booked twice. This modal is for losses that happen *outside* prep.
 const REASONS = [
-  "Prep trim / peel",
   "Spoilage",
   "Burnt food",
   "Returned by customer",

@@ -487,12 +487,15 @@ export default function Inventory() {
               const label = d < 0 ? `${-d}d overdue` : d === 0 ? "expires today" : `expires in ${d}d`;
               return (
                 <div key={b.id} className={`rounded-lg border p-3 text-sm ${cls}`}>
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">{b.name}</span>
-                    <span className="text-xs tabular-nums text-muted-foreground">{fmtQty(b.qty)} {b.unit}</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium flex items-center gap-1.5">
+                      {b.name}
+                      {b.prep && <span className="inline-flex rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">Prepped</span>}
+                    </span>
+                    <span className="text-xs tabular-nums text-muted-foreground shrink-0">{fmtQty(b.qty)} {b.unit}</span>
                   </div>
                   <p className={`text-xs mt-0.5 ${d <= 7 ? "text-destructive font-medium" : "text-muted-foreground"}`}>
-                    {b.expiry} · {label}
+                    {b.prep ? "use by " : ""}{b.expiry} · {label}{b.prep && b.madeBy ? ` · ${b.madeBy}` : ""}
                   </p>
                 </div>
               );

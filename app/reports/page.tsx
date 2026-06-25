@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth";
 import { useStore } from "@/lib/store";
 import { scoreBranch, scoreBand, toPerfRange, type BranchScore } from "@/lib/performance";
 import { STAFF_ROSTER } from "@/lib/auth";
-import { Download, TrendingUp, Star, AlertTriangle, Sparkles, Mail, Trophy, Building2 } from "lucide-react";
+import { Download, TrendingUp, Star, AlertTriangle, Sparkles, Mail, Trophy, Building2, Percent } from "lucide-react";
 
 type Quadrant = "Star" | "Plowhorse" | "Puzzle" | "Dog";
 
@@ -235,6 +235,9 @@ export default function Analytics() {
         </div>
       </section>
 
+      {/* Prep yield — standard vs actual (drives count variance) */}
+      <PrepYieldVariance />
+
       {/* Branch comparison — owner only */}
       {user?.role === "owner" && (
         <div className="rounded-xl border border-border bg-card p-5">
@@ -264,6 +267,118 @@ export default function Analytics() {
       {/* Manager scorecards — owner-only branch comparison */}
       {user?.role === "owner" && <ManagerScorecards />}
     </AppShell>
+  );
+}
+
+// ── Prep yield variance ──────────────────────────────────────────────────────
+
+/**
+ * Standard yield vs the *measured* actual yield per prepped ingredient. The
+ * standard is what the ROS uses to deduct trim on an estimated Log prep, so when
+ * the measured average drifts from it, the count drifts too. Managers recalibrate
+ * the standard from the real numbers here.
+ */
+function PrepYieldVariance() {
+  const store = useStore();
+  const { user } = useAuth();
+  const branch = store.currentBranch;
+  const canCalibrate = user?.role === "owner" || user?.role === "manager";
+
+  const logs = store.prepLogs.filter((l) => l.branch === branch);
+
+  const rows = useMemo(() => {
+    const groups = new Map<string, typeof logs>();
+    for (const l of logs) {
+      const g = groups.get(l.sku) ?? [];
+      g.push(l);
+      groups.set(l.sku, g);
+    }
+    return Array.from(groups.entries()).map(([sku, ls]) => {
+      const standard = store.prepProfiles.find((p) => p.sku === sku)?.yieldPct ?? ls[0].standardYieldPct;
+      const measured = ls.filter((l) => l.measured);
+      const avgActual = measured.length
+        ? Math.round((measured.reduce((s, l) => s + l.actualYieldPct, 0) / measured.length) * 10) / 10
+        : null;
+      return {
+        sku,
+        name: ls[0].name,
+        standard,
+        avgActual,
+        drift: avgActual != null ? Math.round((avgActual - standard) * 10) / 10 : null,
+        runs: ls.length,
+        measuredRuns: measured.length,
+        trimCost: ls.reduce((s, l) => s + l.wasteCost, 0),
+      };
+    }).sort((a, b) => Math.abs(b.drift ?? 0) - Math.abs(a.drift ?? 0));
+  }, [logs, store.prepProfiles]);
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-card p-5">
+      <h2 className="text-sm font-semibold flex items-center gap-2">
+        <Percent className="h-4 w-4 text-muted-foreground" />Prep yield — standard vs actual
+      </h2>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        Where the measured yield drifts from the standard, the standard is creating count variance — recalibrate it.
+      </p>
+      <div className="mt-4 overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-muted-foreground border-b border-border">
+              <th className="pb-2 font-medium">Ingredient</th>
+              <th className="pb-2 font-medium text-right">Standard</th>
+              <th className="pb-2 font-medium text-right">Measured avg</th>
+              <th className="pb-2 font-medium text-right">Drift</th>
+              <th className="pb-2 font-medium text-right">Runs</th>
+              <th className="pb-2 font-medium text-right">Trim ₦</th>
+              {canCalibrate && <th className="pb-2" />}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const bigDrift = r.drift != null && Math.abs(r.drift) >= 3;
+              return (
+                <tr key={r.sku} className="border-b border-border last:border-0">
+                  <td className="py-2 font-medium">{r.name}</td>
+                  <td className="py-2 text-right tabular-nums">{r.standard}%</td>
+                  <td className="py-2 text-right tabular-nums">
+                    {r.avgActual != null ? `${r.avgActual}%` : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className={`py-2 text-right tabular-nums font-medium ${r.drift == null ? "text-muted-foreground" : bigDrift ? "text-destructive" : "text-muted-foreground"}`}>
+                    {r.drift == null ? "—" : `${r.drift > 0 ? "+" : ""}${r.drift}%`}
+                  </td>
+                  <td className="py-2 text-right tabular-nums text-muted-foreground">
+                    {r.measuredRuns}/{r.runs}<span className="text-[10px]"> meas.</span>
+                  </td>
+                  <td className="py-2 text-right tabular-nums text-destructive">₦{r.trimCost.toLocaleString()}</td>
+                  {canCalibrate && (
+                    <td className="py-2 text-right">
+                      {r.avgActual != null && Math.round(r.avgActual) !== r.standard ? (
+                        <button
+                          onClick={() => {
+                            store.setPrepYield(r.sku, Math.round(r.avgActual!));
+                            toast.success(`${r.name} standard recalibrated to ${Math.round(r.avgActual!)}%`);
+                          }}
+                          className="rounded-md border border-border bg-card px-2 py-1 text-xs font-medium hover:bg-surface"
+                        >
+                          Calibrate → {Math.round(r.avgActual)}%
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground">{r.measuredRuns === 0 ? "no measured runs" : "on target"}</span>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-3 text-[11px] text-muted-foreground">
+        “Measured” runs are where the cook entered the raw pull on Log prep — those give the true yield. Estimated runs assume the standard, so log a raw weight now and then to keep standards honest.
+      </p>
+    </div>
   );
 }
 

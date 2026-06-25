@@ -4,13 +4,15 @@ import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 
-const PUBLIC_ROUTES = new Set(["/login", "/welcome"]);
+// `/book` is the guest-facing online booking page — reachable with no login.
+// `/admin` has its own auth system (AdminAuthProvider + AdminGuard).
+const PUBLIC_ROUTES = new Set(["/login", "/welcome", "/book"]);
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
-  const isPublic = PUBLIC_ROUTES.has(pathname);
+  const isPublic = PUBLIC_ROUTES.has(pathname) || pathname.startsWith("/admin");
 
   useEffect(() => {
     if (!isPublic && !user) {

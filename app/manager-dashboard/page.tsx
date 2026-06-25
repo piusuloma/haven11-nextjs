@@ -1,11 +1,12 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
-import { useStore, statusOf, fmtQty } from "@/lib/store";
+import { useStore, statusOf, fmtQty, ticketOverdueMins, STATION_SLA_MINS } from "@/lib/store";
 import {
   ShoppingCart, ClipboardCheck, AlertTriangle, ShieldAlert, Boxes,
-  ArrowLeftRight, Wallet, ArrowRight,
+  ArrowLeftRight, Wallet, ArrowRight, Clock,
 } from "lucide-react";
 
 function timeAgo(ts: number): string {
@@ -19,11 +20,24 @@ export default function ManagerDashboard() {
   const store = useStore();
   const branch = store.currentBranch;
 
+  // Re-render every 30s so "running late" timers stay current while the manager
+  // watches the dashboard (tickets age even when the store doesn't change).
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   const orders = store.orders.filter((o) => o.branch === branch && !o.voided);
   // Held orders are not yet revenue — only paid (Closed) orders count as sales.
   const paidOrders = orders.filter((o) => o.status === "Closed");
   const salesToday = paidOrders.reduce((s, o) => s + o.total, 0);
-  const openTickets = store.tickets.filter((t) => t.branch === branch).length;
+  const branchTickets = store.tickets.filter((t) => t.branch === branch);
+  const openTickets = branchTickets.length;
+  // Meals/drinks still in the pass past their station's target wait time.
+  const lateTickets = branchTickets
+    .filter((t) => ticketOverdueMins(t) > 0)
+    .sort((a, b) => ticketOverdueMins(b) - ticketOverdueMins(a));
   const lowStock = store.inventory.filter((i) => i.branch === branch && statusOf(i) !== "OK");
   const overPours = store.counts.filter((c) => c.overPour && c.branch === branch);
 
@@ -36,7 +50,7 @@ export default function ManagerDashboard() {
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { l: "Sales today", v: `₦${salesToday.toLocaleString()}`, hint: `${paidOrders.length} paid orders` },
-          { l: "Open tickets", v: String(openTickets), hint: "kitchen + bar" },
+          { l: "Open tickets", v: String(openTickets), hint: lateTickets.length > 0 ? `${lateTickets.length} running late` : "kitchen + bar", tone: lateTickets.length > 0 ? "text-destructive" : undefined },
           { l: "Pending approvals", v: String(approvals), hint: "transfers + expenses", tone: approvals > 0 ? "text-warning" : undefined },
           { l: "Stock alerts", v: String(lowStock.length), hint: "low / out", tone: lowStock.length > 0 ? "text-warning" : undefined },
         ].map((k) => (
@@ -92,10 +106,26 @@ export default function ManagerDashboard() {
             <h2 className="text-sm font-semibold">Live alerts</h2>
             <Link href="/alerts" className="text-xs font-medium text-primary hover:underline">View all</Link>
           </header>
-          {overPours.length === 0 && lowStock.length === 0 ? (
+          {lateTickets.length === 0 && overPours.length === 0 && lowStock.length === 0 ? (
             <p className="mt-4 text-sm text-muted-foreground">Nothing needs attention.</p>
           ) : (
             <ul className="mt-4 space-y-2">
+              {lateTickets.slice(0, 4).map((t) => {
+                const over = ticketOverdueMins(t);
+                return (
+                  <li key={t.id}>
+                    <Link href="/kitchen-bar" className="flex items-start gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3 hover:bg-destructive/10 transition-colors">
+                      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-destructive/10 text-destructive"><Clock className="h-4 w-4" /></span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium">Running late — {t.label}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {t.station} · {over}m over the {STATION_SLA_MINS[t.station]}m target · {t.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}
+                        </p>
+                      </div>
+                    </Link>
+                  </li>
+                );
+              })}
               {overPours.slice(0, 2).map((c) => (
                 <li key={c.id} className="flex items-start gap-3 rounded-lg border border-destructive/20 bg-destructive/5 p-3">
                   <span className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-destructive/10 text-destructive"><ShieldAlert className="h-4 w-4" /></span>

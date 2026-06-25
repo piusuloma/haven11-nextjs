@@ -219,6 +219,34 @@ export interface StockCount {
 export interface PrepProfile {
   sku: string;
   yieldPct: number; // 1–100 — usable % after prep
+  /** Industry-standard refrigerated shelf life of the prepped product, in days (drives the use-by / FEFO day-dot). */
+  shelfLifeDays: number;
+}
+
+/**
+ * One logged prep event — the audit + analytics record behind a Log prep.
+ * When the cook enters the raw pull (`measured: true`) the waste is the *actual*
+ * trim and `actualYieldPct` is real; otherwise the raw is derived from the
+ * standard yield and `actualYieldPct` just echoes the standard. The yield-
+ * variance report compares `actualYieldPct` against `standardYieldPct` to flag
+ * standards that have drifted from reality (the main source of count variance).
+ */
+export interface PrepLog {
+  id: string;
+  branch: string;
+  sku: string;
+  name: string;
+  unit: string;
+  rawQty: number;          // raw consumed (measured, or standard-derived)
+  preppedQty: number;      // usable output
+  wasteQty: number;        // rawQty − preppedQty
+  standardYieldPct: number;
+  actualYieldPct: number;
+  measured: boolean;       // true when the cook typed the raw pull → exact, zero-variance
+  wasteCost: number;
+  staffName: string;
+  shiftId?: string;
+  at: number;
 }
 
 export type TableStatus = "available" | "occupied" | "reserved";
@@ -260,6 +288,63 @@ export interface Ticket {
   rejectionReason?: string;
   rejectedBy?: string;
   rejectedAt?: number;
+}
+
+/**
+ * Target wait time (minutes) a ticket should be out the pass within, per station.
+ * Past this, a meal/drink is "running late" and the manager is alerted. Single
+ * source of truth so the KDS, the dashboard and the notification bell agree.
+ */
+export const STATION_SLA_MINS: Record<TicketStation, number> = {
+  Kitchen: 15, // hot meals
+  Bar: 8,      // drinks
+};
+
+/**
+ * How many minutes a still-in-progress ticket is past its station's target wait
+ * time. Returns 0 for tickets that are on time, already Ready, or rejected — so
+ * `> 0` cleanly means "running late and still cooking/pouring".
+ */
+export function ticketOverdueMins(t: Ticket, now: number = Date.now()): number {
+  if (t.status !== "New" && t.status !== "Preparing") return 0;
+  const age = Math.floor((now - t.createdAt) / 60000);
+  return Math.max(0, age - STATION_SLA_MINS[t.station]);
+}
+
+// ── Reservations & table booking ─────────────────────────────────────────────
+
+/**
+ * Where a booking came from. "Online" is a guest self-booking through our own
+ * public booking page (the `/book` channel); the rest are taken by a host.
+ * Modelling the channel as a plain `source` lets the floor team work one
+ * unified list regardless of how the booking arrived.
+ */
+export type ReservationSource = "Online" | "Phone" | "Walk-in";
+
+/** Booking lifecycle: an online request is confirmed, the guest is seated, then it closes out. */
+export type ReservationStatus = "Requested" | "Confirmed" | "Seated" | "Completed" | "No-show" | "Cancelled";
+
+export interface Reservation {
+  id: string;
+  branch: string;
+  customerName: string;
+  phone: string;
+  partySize: number;
+  /** Service date + time, as a timestamp. */
+  at: number;
+  /** Expected dwell — used later for cover/turn-time management. */
+  durationMins: number;
+  source: ReservationSource;
+  status: ReservationStatus;
+  /** Table assigned to the booking, once a host allocates one. */
+  tableId?: string;
+  specialRequests?: string;
+  /** Deposit taken at booking time. Applied to the bill in a later phase. */
+  depositAmount?: number;
+  /** Guest-facing confirmation code, generated for online self-bookings. */
+  ref?: string;
+  createdAt: number;
+  seatedAt?: number;
 }
 
 export type TransferStatus = "Requested" | "Approved" | "Rejected" | "Issued" | "Received" | "Disputed";
@@ -368,9 +453,13 @@ export interface Batch {
   name: string;
   qty: number;
   unit: string;
-  expiry: string; // ISO date
+  expiry: string; // ISO date — use-by for prepped lots, supplier expiry for received goods
   receivedAt: number;
   poId?: string;
+  /** True for an in-house prepped lot (from Log prep) vs a received supplier batch. */
+  prep?: boolean;
+  /** Who prepped the lot (set when `prep`). */
+  madeBy?: string;
 }
 
 // ── Internal stock requests (branch Main Store → Kitchen / Bar / Juice Bar) ──
@@ -845,11 +934,15 @@ interface StoreState {
   menu: MenuItem[];
   /** Standard prep-yield % per raw ingredient — drives Method B prep conversion. */
   prepProfiles: PrepProfile[];
+  /** Logged prep events — yield analytics + the variance report. */
+  prepLogs: PrepLog[];
   shifts: Shift[];
   orders: Order[];
   waste: WasteEntry[];
   counts: StockCount[];
   tables: TableRec[];
+  /** Table bookings across every channel (Reisty / phone / walk-in / website). */
+  reservations: Reservation[];
   tickets: Ticket[];
   transfers: Transfer[];
   vendors: Vendor[];
@@ -961,15 +1054,29 @@ const SEED_MENU: MenuItem[] = [
 // butchering. Starting industry benchmarks — the kitchen recalibrates them from
 // its own logged numbers. (Dry/already-usable goods like rice & oil have no
 // prep loss, so they carry no profile and don't appear in the prep picker.)
+// shelfLifeDays = how long the *prepped* (cut/cleaned, raw, refrigerated) product
+// keeps — fish shortest, peeled tubers / trimmed red meat a few days. Day-dot
+// standards; the kitchen recalibrates from its own handling.
 const SEED_PREP_PROFILES: PrepProfile[] = [
-  { sku: "KIT-YAM",      yieldPct: 79 }, // peel
-  { sku: "KIT-PLANTAIN", yieldPct: 64 }, // peel
-  { sku: "KIT-GOAT",     yieldPct: 70 }, // clean / debone
-  { sku: "KIT-BEEF",     yieldPct: 88 }, // trim fat / silver-skin
-  { sku: "KIT-TILAPIA",  yieldPct: 87 }, // scale & gut
+  { sku: "KIT-YAM",      yieldPct: 79, shelfLifeDays: 3 }, // peel
+  { sku: "KIT-PLANTAIN", yieldPct: 64, shelfLifeDays: 2 }, // peel
+  { sku: "KIT-GOAT",     yieldPct: 70, shelfLifeDays: 2 }, // clean / debone
+  { sku: "KIT-BEEF",     yieldPct: 88, shelfLifeDays: 3 }, // trim fat / silver-skin
+  { sku: "KIT-TILAPIA",  yieldPct: 87, shelfLifeDays: 1 }, // scale & gut
 ];
 
 const DAY = 24 * 60 * 60 * 1000;
+
+// A few logged prep runs so the yield-variance report has signal on first load.
+// Yam & goat are drifting below their standards (over-trimming / poor deliveries);
+// beef is beating its standard. Tilapia was logged without a raw weight (estimate).
+const SEED_PREP_LOGS: PrepLog[] = [
+  { id: "PL-1", branch: "lekki", sku: "KIT-YAM",     name: "Yam",             unit: "kg", rawQty: 10,  preppedQty: 7.4, wasteQty: 2.6, standardYieldPct: 79, actualYieldPct: 74, measured: true,  wasteCost: Math.round(2.6 * 1750), staffName: "Amara K.", at: Date.now() - 4 * 3600_000 },
+  { id: "PL-2", branch: "lekki", sku: "KIT-YAM",     name: "Yam",             unit: "kg", rawQty: 8,   preppedQty: 6.0, wasteQty: 2.0, standardYieldPct: 79, actualYieldPct: 75, measured: true,  wasteCost: Math.round(2.0 * 1750), staffName: "Amara K.", at: Date.now() - 1 * DAY },
+  { id: "PL-3", branch: "lekki", sku: "KIT-GOAT",    name: "Goat Meat",       unit: "kg", rawQty: 6,   preppedQty: 4.0, wasteQty: 2.0, standardYieldPct: 70, actualYieldPct: 67, measured: true,  wasteCost: Math.round(2.0 * 5600), staffName: "Amara K.", at: Date.now() - 5 * 3600_000 },
+  { id: "PL-4", branch: "lekki", sku: "KIT-BEEF",    name: "Beef Sirloin",    unit: "kg", rawQty: 5,   preppedQty: 4.6, wasteQty: 0.4, standardYieldPct: 88, actualYieldPct: 92, measured: true,  wasteCost: Math.round(0.4 * 6000), staffName: "Amara K.", at: Date.now() - 1 * DAY },
+  { id: "PL-5", branch: "lekki", sku: "KIT-TILAPIA", name: "Tilapia (whole)", unit: "pcs", rawQty: 8,  preppedQty: 6.96, wasteQty: 1.04, standardYieldPct: 87, actualYieldPct: 87, measured: false, wasteCost: Math.round(1.04 * 3200), staffName: "Amara K.", at: Date.now() - 2 * 3600_000 },
+];
 
 // Seed order history (today, Lekki) so analytics & dashboards have data to chew on.
 let seedOrderNo = 0;
@@ -1028,18 +1135,28 @@ const SEED_TABLES: TableRec[] = [
   { id: "T8",  label: "Table 8",  zone: "Indoor",  seats: 4, status: "available" },
   { id: "T9",  label: "Table 9",  zone: "Terrace", seats: 4, status: "available" },
   { id: "T10", label: "Table 10", zone: "Terrace", seats: 6, status: "occupied",  guests: 5, orderTotal: 94800, seatedAt: Date.now() - 64 * 60000 },
-  { id: "T11", label: "Table 11", zone: "Terrace", seats: 4, status: "reserved",  reservation: "20:00 · Nkechi A." },
+  { id: "T11", label: "Table 11", zone: "Terrace", seats: 6, status: "reserved",  reservation: "Femi Okoro · party of 6" },
   { id: "T12", label: "Table 12", zone: "Terrace", seats: 2, status: "available" },
   { id: "BAR", label: "Bar",      zone: "Bar",     seats: 8, status: "occupied",  guests: 4, orderTotal: 38600, seatedAt: Date.now() - 12 * 60000 },
 ];
 
 const SEED_TICKETS: Ticket[] = [
+  // Aged past the 15-min kitchen target so the "running late" manager alert is visible on first load.
   { id: "KT-seed1", branch: "lekki", orderId: "A-2390", station: "Kitchen", label: "Table 7", channel: "Dine-in",
-    items: [{ name: "Suya Platter", qty: 2 }, { name: "Jollof Rice", qty: 1 }], status: "Preparing", createdAt: Date.now() - 9 * 60000 },
+    items: [{ name: "Suya Platter", qty: 2 }, { name: "Jollof Rice", qty: 1 }], status: "Preparing", createdAt: Date.now() - 19 * 60000 },
   { id: "KT-seed2", branch: "lekki", orderId: "A-2392", station: "Kitchen", label: "Delivery · Nkechi A.", channel: "Delivery",
     items: [{ name: "Grilled Tilapia", qty: 1 }, { name: "Fried Plantain", qty: 2 }], status: "New", createdAt: Date.now() - 3 * 60000 },
   { id: "BT-seed1", branch: "lekki", orderId: "A-2391", station: "Bar", label: "Table 2", channel: "Dine-in",
     items: [{ name: "Mojito", qty: 2 }, { name: "Heineken", qty: 2 }], status: "New", createdAt: Date.now() - 4 * 60000 },
+];
+
+const MIN = 60 * 1000;
+// Today's book — a realistic mix of channels so the unified list reads true.
+const SEED_RESERVATIONS: Reservation[] = [
+  { id: "RES-001", branch: "lekki", customerName: "Tola Bankole", phone: "+234 803 111 2200", partySize: 4, at: Date.now() + 45 * MIN, durationMins: 90, source: "Online", status: "Confirmed", tableId: "T4", depositAmount: 10000, ref: "BK-7QK2", createdAt: Date.now() - 2 * 3600_000 },
+  { id: "RES-002", branch: "lekki", customerName: "Nkechi A.", phone: "+234 805 332 7781", partySize: 2, at: Date.now() + 120 * MIN, durationMins: 75, source: "Online", status: "Requested", ref: "BK-9X4M", specialRequests: "Window seat if possible", createdAt: Date.now() - 25 * MIN },
+  { id: "RES-003", branch: "lekki", customerName: "Femi Okoro", phone: "+234 802 998 1042", partySize: 6, at: Date.now() + 30 * MIN, durationMins: 120, source: "Phone", status: "Confirmed", tableId: "T11", specialRequests: "Birthday — bringing a cake", createdAt: Date.now() - 50 * MIN },
+  { id: "RES-004", branch: "lekki", customerName: "Adaeze U.", phone: "+234 806 200 9931", partySize: 3, at: Date.now() + 180 * MIN, durationMins: 90, source: "Online", status: "Requested", ref: "BK-3PL8", createdAt: Date.now() - 12 * MIN },
 ];
 
 const SEED_TRANSFERS: Transfer[] = [
@@ -1115,6 +1232,8 @@ const SEED_BATCHES: Batch[] = [
   { id: "b1", sku: "KIT-TILAPIA", branch: "lekki", name: "Tilapia (whole)", qty: 6,  unit: "pcs", expiry: "2026-05-24", receivedAt: Date.now() - 2 * DAY },
   { id: "b2", sku: "KIT-GOAT",    branch: "lekki", name: "Goat Meat",       qty: 8,  unit: "kg",  expiry: "2026-06-02", receivedAt: Date.now() - 1 * DAY },
   { id: "b3", sku: "BAR-SODA",    branch: "lekki", name: "Soda Water",      qty: 9,  unit: "L",   expiry: "2026-08-15", receivedAt: Date.now() - 4 * DAY },
+  // Yesterday's prepped yam carried over — a tracked prepped lot with a use-by (FEFO day-dot).
+  { id: "pb1", sku: "KIT-YAM",    branch: "lekki", name: "Yam",             qty: 3.5, unit: "kg", expiry: "2026-05-31", receivedAt: Date.now() - 1 * DAY, prep: true, madeBy: "Amara K." },
 ];
 
 const SEED_STOCK_REQUESTS: StockRequest[] = [
@@ -1415,11 +1534,13 @@ const SEED_STATE: StoreState = {
   inventoryCategories: [...DEFAULT_INVENTORY_CATEGORIES],
   menu: SEED_MENU,
   prepProfiles: SEED_PREP_PROFILES,
+  prepLogs: SEED_PREP_LOGS,
   shifts: SEED_SHIFTS,
   orders: SEED_ORDERS,
   waste: [],
   counts: [],
   tables: SEED_TABLES,
+  reservations: SEED_RESERVATIONS,
   tickets: SEED_TICKETS,
   transfers: SEED_TRANSFERS,
   vendors: SEED_VENDORS,
@@ -1491,7 +1612,7 @@ interface StoreValue extends StoreState {
    * the trim waste, deducts the waste from the sub-store and books it as
    * "Prep trim / peel". Returns the computed raw / waste / cost for the receipt.
    */
-  recordPrep: (input: { sku: string; location: StockLocation; preppedQty: number; staffName: string; shiftId?: string; photoName?: string; photoDataUrl?: string }) => { ok: boolean; error?: string; raw?: number; waste?: number; cost?: number };
+  recordPrep: (input: { sku: string; location: StockLocation; preppedQty: number; rawQty?: number; staffName: string; shiftId?: string; photoName?: string; photoDataUrl?: string }) => { ok: boolean; error?: string; raw?: number; waste?: number; cost?: number; actualYieldPct?: number; measured?: boolean };
   /** The standard usable-yield % for an ingredient, or undefined if it isn't prep-tracked. */
   prepYieldFor: (sku: string) => number | undefined;
   /** Owner / manager tune the standard yield % an ingredient is held to. */
@@ -1516,6 +1637,17 @@ interface StoreValue extends StoreState {
   addTable: (input: { label: string; zone: string; seats: number }) => { ok: boolean; error?: string; table?: TableRec };
   updateTable: (id: string, patch: { label?: string; zone?: string; seats?: number }) => { ok: boolean; error?: string };
   removeTable: (id: string) => { ok: boolean; error?: string };
+  // reservations & table booking (online self-booking + phone + walk-in channels)
+  addReservation: (input: { customerName: string; phone: string; partySize: number; at: number; source: ReservationSource; branch?: string; tableId?: string; durationMins?: number; specialRequests?: string; depositAmount?: number }) => Reservation;
+  /** Guest self-booking from the public `/book` page — creates an "Online" request and returns its confirmation code. */
+  submitBooking: (input: { branch: string; customerName: string; phone: string; partySize: number; at: number; specialRequests?: string }) => Reservation;
+  confirmReservation: (id: string) => void;
+  /** Allocate a table to a booking — holds the table as "reserved" on the floor plan. */
+  assignReservationTable: (id: string, tableId: string) => { ok: boolean; error?: string };
+  /** Seat the guest — occupies the assigned table, links the customer, marks the booking Seated. */
+  seatReservation: (id: string) => { ok: boolean; error?: string };
+  cancelReservation: (id: string) => void;
+  markReservationNoShow: (id: string) => void;
   advanceTicket: (id: string) => void;
   markTicketReady: (id: string) => void;
   /** Kitchen / Bar reject a ticket they can't fulfil — restocks its ingredients, logs the reason. */
@@ -1601,7 +1733,7 @@ interface StoreValue extends StoreState {
 
 const StoreContext = createContext<StoreValue | null>(null);
 
-const STORAGE_KEY = "haven11_store_v23";
+const STORAGE_KEY = "haven11_store_v27";
 
 let counter = 0;
 const uid = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`;
@@ -2057,9 +2189,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     [state.prepProfiles],
   );
 
-  // Method B — the cook enters the prepped (usable) weight; we read the standard
-  // yield, derive the raw consumed and the trim waste, then deduct *only* the
-  // waste (the usable product stays on the shelf as the same SKU) and book it.
+  // Method B — the cook enters the prepped (usable) weight. If they ALSO enter
+  // the raw they pulled, the trim is the *actual* difference (exact, zero
+  // variance) and we capture the real yield; otherwise we derive the raw from
+  // the standard yield (an estimate). Either way we deduct only the trim — the
+  // usable product stays on the shelf as the same SKU.
   const recordPrep = useCallback<StoreValue["recordPrep"]>((input) => {
     const s = stateRef.current;
     const branch = s.currentBranch;
@@ -2070,8 +2204,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     if (!inv) return { ok: false, error: "No stock of this item in the kitchen." };
 
     const prepped = input.preppedQty;
-    const raw = +(prepped / (profile.yieldPct / 100)).toFixed(4); // raw consumed to yield `prepped`
+    const measured = input.rawQty != null && input.rawQty > 0;
+    if (measured && (input.rawQty as number) < prepped - 1e-4) {
+      return { ok: false, error: "Prepped weight can't be more than the raw you pulled." };
+    }
+    // Measured: use the real raw pull. Estimated: derive raw from the standard yield.
+    const raw = measured
+      ? +(input.rawQty as number).toFixed(4)
+      : +(prepped / (profile.yieldPct / 100)).toFixed(4);
     const waste = +(raw - prepped).toFixed(4);
+    const actualYieldPct = raw > 0 ? +((prepped / raw) * 100).toFixed(1) : profile.yieldPct;
     // Can't have prepped more usable product than the raw on hand could yield.
     if (raw > inv.onHand + 1e-4) {
       return { ok: false, error: `That needs ${fmtQty(raw)} ${inv.unit} raw but only ${fmtQty(inv.onHand)} ${inv.unit} is in the kitchen.` };
@@ -2084,9 +2226,23 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       staffName: input.staffName, shiftId: input.shiftId, at: Date.now(),
       photoName: input.photoName, photoDataUrl: input.photoDataUrl,
     };
+    // Track the usable output as a dated prepped lot so leftovers carry over with
+    // a use-by (FEFO day-dot) instead of vanishing into generic stock.
+    const useBy = new Date(Date.now() + profile.shelfLifeDays * 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    const prepBatch: Batch = {
+      id: uid("PB"), sku: input.sku, branch, name: inv.name, qty: prepped, unit: inv.unit,
+      expiry: useBy, receivedAt: Date.now(), prep: true, madeBy: input.staffName,
+    };
+    const prepLog: PrepLog = {
+      id: uid("PL"), branch, sku: input.sku, name: inv.name, unit: inv.unit,
+      rawQty: raw, preppedQty: prepped, wasteQty: waste,
+      standardYieldPct: profile.yieldPct, actualYieldPct, measured,
+      wasteCost: cost, staffName: input.staffName, shiftId: input.shiftId, at: Date.now(),
+    };
     const entry = audit({
       branch, actor: input.staffName, category: "Inventory", action: "Prep logged",
-      detail: `${inv.name} · prepped ${fmtQty(prepped)} ${inv.unit} @ ${profile.yieldPct}% yield · ${fmtQty(waste)} ${inv.unit} trim · ₦${cost.toLocaleString()}`,
+      detail: `${inv.name} · prepped ${fmtQty(prepped)} ${inv.unit} from ${fmtQty(raw)} ${inv.unit} raw · ${actualYieldPct}% ${measured ? "actual" : "(est.)"} yield · ${fmtQty(waste)} ${inv.unit} trim · use by ${useBy} · ₦${cost.toLocaleString()}`,
       ref: input.sku, amount: cost, severity: "info",
     });
     setState((p) => ({
@@ -2097,9 +2253,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
           : i,
       ),
       waste: [created, ...p.waste],
+      batches: [prepBatch, ...p.batches],
+      prepLogs: [prepLog, ...p.prepLogs],
       auditLog: [entry, ...p.auditLog],
     }));
-    return { ok: true, raw, waste, cost };
+    return { ok: true, raw, waste, cost, actualYieldPct, measured };
   }, []);
 
   const setPrepYield = useCallback<StoreValue["setPrepYield"]>((sku, yieldPct) => {
@@ -2108,7 +2266,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       ...p,
       prepProfiles: p.prepProfiles.some((x) => x.sku === sku)
         ? p.prepProfiles.map((x) => (x.sku === sku ? { ...x, yieldPct: pct } : x))
-        : [...p.prepProfiles, { sku, yieldPct: pct }],
+        : [...p.prepProfiles, { sku, yieldPct: pct, shelfLifeDays: 3 }],
     }));
   }, []);
 
@@ -2203,6 +2361,126 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }
     setState((p) => ({ ...p, tables: p.tables.filter((t) => t.id !== id) }));
     return { ok: true };
+  }, []);
+
+  // ── Reservations & table booking ───────────────────────────────────────────
+
+  const addReservation = useCallback<StoreValue["addReservation"]>((input) => {
+    const s = stateRef.current;
+    const created: Reservation = {
+      id: `RES-${String(s.reservations.length + 1).padStart(3, "0")}`,
+      branch: input.branch ?? s.currentBranch,
+      customerName: input.customerName,
+      phone: input.phone,
+      partySize: input.partySize,
+      at: input.at,
+      durationMins: input.durationMins ?? 90,
+      source: input.source,
+      // Online self-bookings arrive unconfirmed; a host taking it directly confirms on the spot.
+      status: input.source === "Online" ? "Requested" : "Confirmed",
+      tableId: input.tableId,
+      specialRequests: input.specialRequests,
+      depositAmount: input.depositAmount,
+      // Generate a guest confirmation code for online bookings.
+      ref: input.source === "Online" ? `BK-${uid("").slice(-4).toUpperCase()}` : undefined,
+      createdAt: Date.now(),
+    };
+    setState((p) => ({ ...p, reservations: [created, ...p.reservations] }));
+    return created;
+  }, []);
+
+  const submitBooking = useCallback<StoreValue["submitBooking"]>((input) => {
+    return addReservation({
+      branch: input.branch,
+      customerName: input.customerName,
+      phone: input.phone,
+      partySize: input.partySize,
+      at: input.at,
+      source: "Online",
+      specialRequests: input.specialRequests,
+    });
+  }, [addReservation]);
+
+  const confirmReservation = useCallback<StoreValue["confirmReservation"]>((id) => {
+    setState((p) => ({
+      ...p,
+      reservations: p.reservations.map((r) => (r.id === id && r.status === "Requested" ? { ...r, status: "Confirmed" } : r)),
+    }));
+  }, []);
+
+  const assignReservationTable = useCallback<StoreValue["assignReservationTable"]>((id, tableId) => {
+    const s = stateRef.current;
+    const res = s.reservations.find((r) => r.id === id);
+    if (!res) return { ok: false, error: "Reservation not found" };
+    const table = s.tables.find((t) => t.id === tableId);
+    if (!table) return { ok: false, error: "Table not found" };
+    if (table.status === "occupied") return { ok: false, error: `${table.label} is occupied` };
+    const label = `${res.customerName} · party of ${res.partySize}`;
+    setState((p) => ({
+      ...p,
+      tables: p.tables.map((t) => {
+        if (t.id === tableId) return { ...t, status: "reserved", reservation: label };
+        // Release any table previously held for this booking.
+        if (res.tableId && t.id === res.tableId && t.status === "reserved") {
+          return { ...t, status: "available", reservation: undefined };
+        }
+        return t;
+      }),
+      reservations: p.reservations.map((r) => (r.id === id ? { ...r, tableId } : r)),
+    }));
+    return { ok: true };
+  }, []);
+
+  const seatReservation = useCallback<StoreValue["seatReservation"]>((id) => {
+    const s = stateRef.current;
+    const res = s.reservations.find((r) => r.id === id);
+    if (!res) return { ok: false, error: "Reservation not found" };
+    if (!res.tableId) return { ok: false, error: "Assign a table before seating" };
+    const table = s.tables.find((t) => t.id === res.tableId);
+    if (table && table.status === "occupied") return { ok: false, error: `${table.label} is still occupied` };
+    setState((p) => {
+      // Capture the diner into the phone-keyed golden record if they're new.
+      let customers = p.customers;
+      if (res.phone && !p.customers.some((c) => c.phone === res.phone)) {
+        customers = [
+          { id: uid("cust"), name: res.customerName, phone: res.phone, tier: "New", joinedAt: Date.now(), wallet: 0, credit: 0, creditLimit: 0 },
+          ...p.customers,
+        ];
+      }
+      return {
+        ...p,
+        tables: p.tables.map((t) => (t.id === res.tableId ? { ...t, status: "occupied", guests: res.partySize, seatedAt: Date.now(), reservation: undefined } : t)),
+        reservations: p.reservations.map((r) => (r.id === id ? { ...r, status: "Seated", seatedAt: Date.now() } : r)),
+        customers,
+      };
+    });
+    return { ok: true };
+  }, []);
+
+  // Free a held (not yet seated) table when a booking falls through.
+  const releaseHeldTable = (tables: TableRec[], tableId: string | undefined) =>
+    tables.map((t) => (tableId && t.id === tableId && t.status === "reserved" ? { ...t, status: "available" as const, reservation: undefined } : t));
+
+  const cancelReservation = useCallback<StoreValue["cancelReservation"]>((id) => {
+    setState((p) => {
+      const res = p.reservations.find((r) => r.id === id);
+      return {
+        ...p,
+        tables: releaseHeldTable(p.tables, res?.tableId),
+        reservations: p.reservations.map((r) => (r.id === id ? { ...r, status: "Cancelled" } : r)),
+      };
+    });
+  }, []);
+
+  const markReservationNoShow = useCallback<StoreValue["markReservationNoShow"]>((id) => {
+    setState((p) => {
+      const res = p.reservations.find((r) => r.id === id);
+      return {
+        ...p,
+        tables: releaseHeldTable(p.tables, res?.tableId),
+        reservations: p.reservations.map((r) => (r.id === id ? { ...r, status: "No-show" } : r)),
+      };
+    });
   }, []);
 
   const advanceTicket = useCallback<StoreValue["advanceTicket"]>((id) => {
@@ -3591,6 +3869,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       requestStock, issueStockRequest,
       addMenuItem, updateMenuItem, importMenu, recipeCost,
       seatTable, freeTable, addTable, updateTable, removeTable, advanceTicket, markTicketReady, rejectTicket, clearTicket,
+      addReservation, submitBooking, confirmReservation, assignReservationTable, seatReservation, cancelReservation, markReservationNoShow,
       requestTransfer, approveTransfer, rejectTransfer, issueTransfer, receiveTransfer,
       addVendor, createPO, approvePO, rejectPO, receivePO, markPOPaid,
       upsertVendorPricing, removeVendorPricing,
@@ -3612,6 +3891,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
      requestStock, issueStockRequest,
      addMenuItem, updateMenuItem, importMenu, recipeCost,
      seatTable, freeTable, addTable, updateTable, removeTable, advanceTicket, markTicketReady, rejectTicket, clearTicket,
+     addReservation, submitBooking, confirmReservation, assignReservationTable, seatReservation, cancelReservation, markReservationNoShow,
      requestTransfer, approveTransfer, rejectTransfer, issueTransfer, receiveTransfer,
      addVendor, createPO, approvePO, rejectPO, receivePO, markPOPaid,
      upsertVendorPricing, removeVendorPricing,

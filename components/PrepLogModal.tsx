@@ -32,6 +32,7 @@ export function PrepLogModal({ onClose, location = "kitchen" }: { onClose: () =>
 
   const [sku, setSku] = useState(items[0]?.sku ?? "");
   const [prepped, setPrepped] = useState("");
+  const [rawPulled, setRawPulled] = useState("");
   const [photoName, setPhotoName] = useState("");
   const [photoDataUrl, setPhotoDataUrl] = useState("");
   const [editingYield, setEditingYield] = useState(false);
@@ -39,14 +40,26 @@ export function PrepLogModal({ onClose, location = "kitchen" }: { onClose: () =>
   const fileRef = useRef<HTMLInputElement>(null);
 
   const item = items.find((i) => i.sku === sku) ?? items[0];
-  const yieldPct = item ? store.prepYieldFor(item.sku) ?? 0 : 0;
+  const profile = item ? store.prepProfiles.find((p) => p.sku === item.sku) : undefined;
+  const yieldPct = profile?.yieldPct ?? 0;
+  const shelfLifeDays = profile?.shelfLifeDays ?? 0;
+  const useBy = new Date(Date.now() + shelfLifeDays * 24 * 60 * 60 * 1000)
+    .toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
 
-  // Live Method-B maths from the prepped weight + standard yield.
+  // Live Method-B maths. If the cook enters the raw they pulled, the trim is the
+  // ACTUAL difference (exact); otherwise it's derived from the standard yield.
   const preppedQty = Number(prepped) || 0;
-  const raw = yieldPct > 0 ? +(preppedQty / (yieldPct / 100)).toFixed(2) : 0;
+  const rawPulledQty = Number(rawPulled) || 0;
+  const measured = rawPulledQty > 0;
+  const raw = measured
+    ? rawPulledQty
+    : yieldPct > 0 ? +(preppedQty / (yieldPct / 100)).toFixed(2) : 0;
   const waste = +(raw - preppedQty).toFixed(2);
+  const actualYield = raw > 0 ? Math.round((preppedQty / raw) * 100) : 0;
   const cost = item ? Math.round(waste * item.cost) : 0;
   const tooMuch = item ? raw > item.onHand + 1e-4 : false;
+  // Entered a raw weight smaller than the usable output — impossible.
+  const rawTooSmall = measured && preppedQty > 0 && rawPulledQty < preppedQty - 1e-4;
 
   function handlePhoto(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -84,6 +97,7 @@ export function PrepLogModal({ onClose, location = "kitchen" }: { onClose: () =>
       sku: item.sku,
       location: item.location,
       preppedQty,
+      rawQty: measured ? rawPulledQty : undefined,
       staffName: user?.name ?? "Unknown",
       shiftId: shift?.id,
       photoName: photoName || undefined,
@@ -91,7 +105,9 @@ export function PrepLogModal({ onClose, location = "kitchen" }: { onClose: () =>
     });
     if (!res.ok) { toast.error(res.error ?? "Couldn't log prep"); return; }
     toast.success(
-      `Prep logged · ${fmtQty(res.raw ?? 0)} ${item.unit} raw → ${fmtQty(preppedQty)} usable · ${fmtQty(res.waste ?? 0)} ${item.unit} trim (₦${(res.cost ?? 0).toLocaleString()})`,
+      res.measured
+        ? `Prep logged · exact ${res.actualYieldPct}% yield · ${fmtQty(res.waste ?? 0)} ${item.unit} trim (₦${(res.cost ?? 0).toLocaleString()})`
+        : `Prep logged (estimated) · ${fmtQty(res.raw ?? 0)} ${item.unit} raw → ${fmtQty(preppedQty)} usable · ${fmtQty(res.waste ?? 0)} ${item.unit} trim`,
     );
     onClose();
   }
@@ -109,7 +125,7 @@ export function PrepLogModal({ onClose, location = "kitchen" }: { onClose: () =>
       footer={
         <>
           <ModalButton variant="ghost" onClick={onClose}>Cancel</ModalButton>
-          <ModalButton onClick={submit} disabled={!item || preppedQty <= 0 || tooMuch}>Log prep</ModalButton>
+          <ModalButton onClick={submit} disabled={!item || preppedQty <= 0 || tooMuch || rawTooSmall}>Log prep</ModalButton>
         </>
       }
     >
@@ -186,6 +202,26 @@ export function PrepLogModal({ onClose, location = "kitchen" }: { onClose: () =>
             </span>
           </label>
 
+          <label className="block">
+            <span className="text-xs font-medium text-muted-foreground">
+              Raw pulled {item ? `(${item.unit})` : ""} · <span className="text-primary">optional</span>
+            </span>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="any"
+              value={rawPulled}
+              onChange={(e) => setRawPulled(e.target.value)}
+              placeholder="leave blank to use the standard yield"
+              className={inputCls}
+            />
+            <span className={`mt-1 block text-[11px] ${measured ? "text-primary" : "text-muted-foreground"}`}>
+              {measured
+                ? `Exact mode — recording the actual ${actualYield}% yield, zero variance.`
+                : "Enter the raw weight to record the exact yield and remove variance."}
+            </span>
+          </label>
+
           {/* Photo capture / upload */}
           <div>
             <p className="text-xs font-medium text-muted-foreground mb-1.5">Trim photo (optional)</p>
@@ -221,14 +257,31 @@ export function PrepLogModal({ onClose, location = "kitchen" }: { onClose: () =>
 
           {/* Live conversion preview */}
           <div className="rounded-xl border border-border bg-surface/60 p-3 space-y-1.5 text-sm">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">The ROS will record</p>
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">The ROS will record</p>
+              <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold ${measured ? "bg-primary/10 text-primary" : "bg-warning/15 text-foreground"}`}>
+                {measured ? "exact" : "estimated"}
+              </span>
+            </div>
             <div className="flex justify-between">
-              <span className="text-muted-foreground">Raw consumed (derived)</span>
+              <span className="text-muted-foreground">{measured ? "Raw pulled" : "Raw consumed (derived)"}</span>
               <span className="font-medium tabular-nums">{fmtQty(raw)} {item?.unit}</span>
             </div>
+            {measured && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Actual yield vs standard</span>
+                <span className={`font-medium tabular-nums ${actualYield < yieldPct ? "text-destructive" : "text-primary"}`}>
+                  {actualYield}% vs {yieldPct}%
+                </span>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-muted-foreground">Usable kept in stock</span>
               <span className="font-medium tabular-nums">{fmtQty(preppedQty)} {item?.unit}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Prepped lot · use by</span>
+              <span className="font-medium">{shelfLifeDays > 0 ? `${useBy} (${shelfLifeDays}d)` : "—"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Trim / yield loss</span>
@@ -240,6 +293,11 @@ export function PrepLogModal({ onClose, location = "kitchen" }: { onClose: () =>
             </div>
           </div>
 
+          {rawTooSmall && (
+            <p className="text-xs font-medium text-destructive">
+              Raw pulled can&apos;t be less than the prepped weight.
+            </p>
+          )}
           {tooMuch && (
             <p className="text-xs font-medium text-destructive">
               That needs {fmtQty(raw)} {item?.unit} raw but only {fmtQty(item?.onHand ?? 0)} {item?.unit} is in the kitchen.

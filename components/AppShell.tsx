@@ -5,13 +5,13 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard, ShoppingCart, Boxes, ChefHat, Wine,
-  ClipboardList, Coins, Users, CalendarRange, HeartHandshake,
+  ClipboardList, Coins, Users, CalendarRange, CalendarCheck, HeartHandshake,
   BarChart3, ShieldAlert, Bell, LogOut, AlertTriangle, CheckCircle2, Menu, X,
   ArrowLeftRight, Building2, Warehouse, ChevronDown, Check, Truck, ScrollText, Wallet, Banknote, Bike, History, UserCog, Settings, HandHeart, Scale,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useAuth, type StaffRole } from "@/lib/auth";
-import { useStore, statusOf, fmtQty, daysUntil } from "@/lib/store";
+import { useStore, statusOf, fmtQty, daysUntil, ticketOverdueMins, STATION_SLA_MINS } from "@/lib/store";
 
 type NavItem = {
   href: string;
@@ -34,6 +34,7 @@ const roleNav: Record<StaffRole, NavSection[]> = {
     ]},
     { label: "Operate", items: [
       { href: "/pos", icon: ShoppingCart, label: "Front of House" },
+      { href: "/reservations", icon: CalendarCheck, label: "Bookings" },
       { href: "/cashier", icon: Coins, label: "Shifts" },
       { href: "/kitchen-bar", icon: Wine, label: "Kitchen & Bar" },
       { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
@@ -74,6 +75,7 @@ const roleNav: Record<StaffRole, NavSection[]> = {
     ]},
     { label: "Operate", items: [
       { href: "/pos", icon: ShoppingCart, label: "Front of House" },
+      { href: "/reservations", icon: CalendarCheck, label: "Bookings" },
       { href: "/cashier", icon: Coins, label: "Shifts" },
       { href: "/kitchen-bar", icon: Wine, label: "Kitchen & Bar" },
       { href: "/dispatch", icon: Bike, label: "Dispatch & Fleet" },
@@ -115,6 +117,7 @@ const roleNav: Record<StaffRole, NavSection[]> = {
     { label: "", items: [
       { href: "/cashier-home", icon: LayoutDashboard, label: "My Shift" },
       { href: "/pos", icon: ShoppingCart, label: "Front of House" },
+      { href: "/reservations", icon: CalendarCheck, label: "Bookings" },
     ]},
   ],
   kitchen: [
@@ -203,13 +206,36 @@ interface Note {
 function NotificationBell() {
   const router = useRouter();
   const store = useStore();
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [read, setRead] = useState<Set<string>>(new Set());
   const ref = useRef<HTMLDivElement>(null);
 
   // Notifications are derived live from the current branch's store state.
   const branch = store.currentBranch;
+  // Late meals/drinks are an oversight concern — surfaced to the people who run
+  // the floor (owner / manager), who otherwise aren't watching the KDS.
+  const seesLateTickets = user?.role === "owner" || user?.role === "manager";
   const notes: Note[] = [
+    // Running-late tickets — a meal/drink still in the pass past its station's
+    // target wait time. Top of the bell so the manager sees it first.
+    ...(seesLateTickets
+      ? store.tickets
+          .filter((t) => t.branch === branch && ticketOverdueMins(t) > 0)
+          .sort((a, b) => ticketOverdueMins(b) - ticketOverdueMins(a))
+          .slice(0, 6)
+          .map((t) => {
+            const over = ticketOverdueMins(t);
+            return {
+              id: `late-${t.id}`,
+              tone: "danger" as NoteTone,
+              title: `Running late — ${t.label}`,
+              meta: `${t.station} · ${over}m over the ${STATION_SLA_MINS[t.station]}m target · ${t.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}`,
+              time: `${over}m late`,
+              href: "/kitchen-bar",
+            };
+          })
+      : []),
     // Ready tickets — kitchen / bar flagged these "Ready"; the waiter needs to
     // see them ASAP. Highest priority so they sit at the top of the bell.
     ...store.tickets.filter((t) => t.branch === branch && t.status === "Ready").slice(0, 6).map((t) => ({
